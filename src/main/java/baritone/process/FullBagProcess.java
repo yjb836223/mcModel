@@ -33,12 +33,10 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.inventory.ClickType;
 import net.minecraft.world.inventory.InventoryMenu;
-import net.minecraft.world.item.ArmorItem;
+import net.minecraft.tags.ItemTags;
 import net.minecraft.world.item.BlockItem;
-import net.minecraft.world.item.DiggerItem;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
-import net.minecraft.world.item.SwordItem;
 import net.minecraft.world.item.component.ItemContainerContents;
 import net.minecraft.world.level.block.ShulkerBoxBlock;
 import net.minecraft.world.level.block.state.BlockState;
@@ -142,7 +140,7 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
                         continue;
                     }
 
-                    long usedSlots = contents.nonEmptyItems().count();
+                    long usedSlots = 0; for (ItemStack ignored : contents.nonEmptyItems()) usedSlots++;
                     if (usedSlots < 27) {
                         // This shulker has space
                         foundSlot = i;
@@ -455,9 +453,10 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
         if (stack == null || stack.isEmpty()) return false;
         var item = stack.getItem();
         if (stack.has(DataComponents.FOOD)) return true;
-        if (item instanceof DiggerItem) return true;
-        if (item instanceof SwordItem) return true;
-        if (item instanceof ArmorItem) return true;
+        if (stack.is(ItemTags.TOOLS)) return true;
+        if (stack.is(ItemTags.SWORDS)) return true;
+        if (stack.is(ItemTags.AXES)) return true;
+        if (stack.has(DataComponents.EQUIPPABLE)) return true;
         if (item == Items.TOTEM_OF_UNDYING) return true;
         if (isShulkerBox(stack)) return true;
         return false;
