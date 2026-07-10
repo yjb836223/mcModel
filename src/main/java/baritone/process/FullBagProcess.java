@@ -93,11 +93,20 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
 
     @Override
     public boolean isActive() {
+        if (ctx.player() == null) return false;
         if (!Baritone.settings().fullbag.value) {
+            state = State.IDLE;
             return false;
         }
         if (state == State.AFK_STOP) {
-            return false;
+            // Allow restart if inventory is no longer full or shulker boxes are now available
+            if (!isInventoryFull() || hasShulkerBoxes()) {
+                state = State.IDLE;
+                checkedSlots.clear();
+                needsPlaceCheck.clear();
+            } else {
+                return false;
+            }
         }
         if (state != State.IDLE) {
             return true;
@@ -415,13 +424,24 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
     public void onLostControl() {
         baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
         baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, false);
-        state = State.IDLE;
+        // Don't reset AFK_STOP — prevents immediate re-trigger when inventory is still full
+        if (state != State.AFK_STOP) {
+            state = State.IDLE;
+        }
         placedPos = null;
         activeShulkerSlot = -1;
         checkedSlots.clear();
         needsPlaceCheck.clear();
         waitTicks = 0;
         checkOnly = false;
+    }
+
+    private boolean hasShulkerBoxes() {
+        var inv = ctx.player().getInventory().getNonEquipmentItems();
+        for (int i = 0; i < inv.size(); i++) {
+            if (isShulkerBox(inv.get(i))) return true;
+        }
+        return false;
     }
 
     @Override

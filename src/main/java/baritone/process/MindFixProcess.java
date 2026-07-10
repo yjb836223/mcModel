@@ -59,6 +59,7 @@ public final class MindFixProcess extends BaritoneProcessHelper implements IMind
 
     @Override
     public boolean isActive() {
+        if (ctx.player() == null) return false;
         if (!Baritone.settings().mindfix.value) {
             return false;
         }
