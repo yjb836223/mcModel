@@ -91,6 +91,10 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
     private int aimTicks = 0;
     private static final int AIM_TICKS_REQUIRED = 3;
 
+    // Saved allowPlace value — restored after shulker placement
+    private boolean savedAllowPlace = true;
+    private boolean allowPlaceOverridden = false;
+
     // Ticks spent trying to find a surface to place shulker — triggers digging if too long
     private int noSurfaceTicks = 0;
     private static final int NO_SURFACE_DIG_THRESHOLD = 40;
@@ -228,6 +232,12 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
 
                 Optional<Rotation> rot = RotationUtils.reachable(ctx, surface);
                 if (rot.isPresent()) {
+                    // Override allowPlace so Baritone doesn't block our right-click
+                    if (!allowPlaceOverridden) {
+                        savedAllowPlace = Baritone.settings().allowPlace.value;
+                        Baritone.settings().allowPlace.value = true;
+                        allowPlaceOverridden = true;
+                    }
                     baritone.getLookBehavior().updateTarget(rot.get(), true);
                     aimTicks++;
                     if (aimTicks >= AIM_TICKS_REQUIRED) {
@@ -247,6 +257,11 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
 
             case WAITING_OPEN: {
                 baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, false);
+                // Restore allowPlace now that placement attempt is done
+                if (allowPlaceOverridden) {
+                    Baritone.settings().allowPlace.value = savedAllowPlace;
+                    allowPlaceOverridden = false;
+                }
 
                 // Check if a container menu opened (not the player's inventory menu)
                 if (!(ctx.player().containerMenu instanceof InventoryMenu)) {
@@ -467,6 +482,10 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
         aimTicks = 0;
         noSurfaceTicks = 0;
         checkOnly = false;
+        if (allowPlaceOverridden) {
+            Baritone.settings().allowPlace.value = savedAllowPlace;
+            allowPlaceOverridden = false;
+        }
     }
 
     private boolean hasShulkerBoxes() {
