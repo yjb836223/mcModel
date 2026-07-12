@@ -40,6 +40,7 @@ import net.minecraft.world.item.Items;
 import net.minecraft.world.item.component.ItemContainerContents;
 import net.minecraft.world.level.block.ShulkerBoxBlock;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.InteractionHand;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -247,7 +248,7 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
                         false
                     );
                 ctx.playerController().processRightClickBlock(
-                    ctx.player(), ctx.world(), hitResult);
+                    ctx.player(), ctx.world(), InteractionHand.MAIN_HAND, hitResult);
                 waitTicks = 0;
                 aimTicks = 0;
                 state = State.WAITING_OPEN;
@@ -546,7 +547,6 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
         if (stack == null || stack.isEmpty()) return false;
         var item = stack.getItem();
         if (stack.has(DataComponents.FOOD)) return true;
-        if (stack.is(ItemTags.TOOLS)) return true;
         if (stack.is(ItemTags.SWORDS)) return true;
         if (stack.is(ItemTags.AXES)) return true;
         if (stack.has(DataComponents.EQUIPPABLE)) return true;
