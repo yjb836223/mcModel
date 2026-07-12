@@ -144,6 +144,21 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
                 }
             }
         }
+        // Priority: pick up any matching drops within 8 blocks before continuing to mine
+        BlockPos playerPos = ctx.playerFeet();
+        List<BlockPos> nearbyDrops = droppedItemsScan().stream()
+                .filter(d -> d.distSqr(playerPos) <= 64) // 8 blocks = distSqr 64
+                .sorted(java.util.Comparator.comparingDouble(d -> d.distSqr(playerPos)))
+                .collect(java.util.stream.Collectors.toList());
+        if (!nearbyDrops.isEmpty()) {
+            Goal dropGoal = new GoalComposite(
+                    nearbyDrops.stream()
+                            .map(d -> (Goal) new GoalBlock(d))
+                            .toArray(Goal[]::new)
+            );
+            return new PathingCommand(dropGoal, PathingCommandType.REVALIDATE_GOAL_AND_PATH);
+        }
+
         PathingCommand command = updateGoal();
         if (command == null) {
             // none in range
@@ -436,14 +451,8 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
     }
 
     private static List<BlockPos> prune(CalculationContext ctx, List<BlockPos> locs2, BlockOptionalMetaLookup filter, int max, List<BlockPos> blacklist, List<BlockPos> dropped) {
-        dropped.removeIf(drop -> {
-            for (BlockPos pos : locs2) {
-                if (pos.distSqr(drop) <= 9 && filter.has(ctx.get(pos.getX(), pos.getY(), pos.getZ())) && MineProcess.plausibleToBreak(ctx, pos)) { // TODO maybe drop also has to be supported? no lava below?
-                    return true;
-                }
-            }
-            return false;
-        });
+        // Drops are always kept as targets regardless of nearby ore distance
+        // (previously drops within 3 blocks of ore were removed, causing missed pickups)
         List<BlockPos> locs = locs2
                 .stream()
                 .distinct()
