@@ -53,6 +53,10 @@ public final class MindFixProcess extends BaritoneProcessHelper implements IMind
     private int silkTouchOriginalSlot = -1; // -1 means not moved
     private boolean silkTouchMovedToOffhand = false;
 
+    // Track which inventory slot is currently being repaired (-1 = none)
+    // Only switch to a new pick once the current one is fully repaired
+    private int currentRepairSlot = -1;
+
     // Saved mineScanDroppedItems — disabled during repair to avoid picking up ore drops
     private boolean savedMineScanDroppedItems = true;
     private boolean mineScanOverridden = false;
@@ -187,6 +191,7 @@ public final class MindFixProcess extends BaritoneProcessHelper implements IMind
         }
         savedFilter = null;
         savedDesiredQuantity = 0;
+        currentRepairSlot = -1;
         if (mineScanOverridden) {
             Baritone.settings().mineScanDroppedItems.value = savedMineScanDroppedItems;
             mineScanOverridden = false;
@@ -282,6 +287,20 @@ public final class MindFixProcess extends BaritoneProcessHelper implements IMind
      */
     private void ensureMostDamagedPickInMainHand() {
         NonNullList<ItemStack> inv = ctx.player().getInventory().getNonEquipmentItems();
+
+        // If we're already tracking a slot, stick with it until it's fully repaired
+        if (currentRepairSlot >= 0 && currentRepairSlot < inv.size()) {
+            ItemStack current = inv.get(currentRepairSlot);
+            if (isPickaxe(current) && !hasSilkTouch(current) && current.getDamageValue() > 0) {
+                // Still needs repair — keep it in main hand
+                putSlotInMainHand(currentRepairSlot);
+                return;
+            }
+            // Fully repaired or slot changed — pick a new one
+            currentRepairSlot = -1;
+        }
+
+        // Find the most damaged non-silk-touch pick to repair next
         int mostDamagedSlot = -1;
         int highestDamage = 0;
         for (int i = 0; i < inv.size(); i++) {
@@ -293,13 +312,19 @@ public final class MindFixProcess extends BaritoneProcessHelper implements IMind
             }
         }
         if (mostDamagedSlot == -1) return;
-        if (mostDamagedSlot < 9) {
-            ctx.player().getInventory().setSelectedSlot(mostDamagedSlot);
+        currentRepairSlot = mostDamagedSlot;
+        putSlotInMainHand(mostDamagedSlot);
+    }
+
+    private void putSlotInMainHand(int slot) {
+        if (slot < 9) {
+            ctx.player().getInventory().setSelectedSlot(slot);
         } else {
             ctx.playerController().windowClick(
                     ctx.player().inventoryMenu.containerId,
-                    mostDamagedSlot, 0, ClickType.SWAP, ctx.player());
+                    slot, 0, ClickType.SWAP, ctx.player());
             ctx.player().getInventory().setSelectedSlot(0);
+            currentRepairSlot = 0; // slot 0 now has the pick
         }
     }
 

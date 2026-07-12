@@ -515,13 +515,30 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
 
     private boolean isInventoryFull() {
         NonNullList<ItemStack> items = ctx.player().getInventory().getNonEquipmentItems();
+
+        // Step 1: empty slot = definitely not full
         for (int i = 0; i < 36; i++) {
-            ItemStack stack = items.get(i);
-            // Slot has room if it's empty OR not at max stack size
-            if (stack.isEmpty() || stack.getCount() < stack.getMaxStackSize()) {
-                return false;
+            if (items.get(i).isEmpty()) return false;
+        }
+
+        // Step 2: no empty slots — check if any slot can still accept mine drops
+        // (e.g. 36 different items each at count 1: no empty slot, but NOT truly mining-full)
+        baritone.api.utils.BlockOptionalMetaLookup mineFilter = null;
+        try {
+            mineFilter = ((baritone.process.MineProcess) baritone.getMineProcess()).getFilter();
+        } catch (Exception ignored) {}
+
+        if (mineFilter != null) {
+            for (int i = 0; i < 36; i++) {
+                ItemStack slot = items.get(i);
+                // If this slot contains the mined item type and isn't full → not truly full
+                if (slot.getCount() < slot.getMaxStackSize() && mineFilter.has(slot)) {
+                    return false;
+                }
             }
         }
+
+        // No empty slots and mine drops can't fit in any existing stack → full
         return true;
     }
 

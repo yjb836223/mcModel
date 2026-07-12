@@ -62,6 +62,11 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
     private int desiredQuantity;
     private int tickCount;
 
+    // Drop scan cache — updated every 5 ticks to avoid iterating entities every tick
+    private List<BlockPos> cachedDrops = java.util.Collections.emptyList();
+    private int dropScanCooldown = 0;
+    private static final int DROP_SCAN_INTERVAL = 5;
+
     public MineProcess(Baritone baritone) {
         super(baritone);
     }
@@ -144,9 +149,15 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
                 }
             }
         }
-        // Priority: pick up any matching drops within 8 blocks before continuing to mine
+        // Priority: pick up matching drops within 8 blocks — cached every 5 ticks for performance
+        if (dropScanCooldown <= 0) {
+            cachedDrops = droppedItemsScan();
+            dropScanCooldown = DROP_SCAN_INTERVAL;
+        } else {
+            dropScanCooldown--;
+        }
         BlockPos playerPos = ctx.playerFeet();
-        List<BlockPos> nearbyDrops = droppedItemsScan().stream()
+        List<BlockPos> nearbyDrops = cachedDrops.stream()
                 .filter(d -> d.distSqr(playerPos) <= 64) // 8 blocks = distSqr 64
                 .sorted(java.util.Comparator.comparingDouble(d -> d.distSqr(playerPos)))
                 .collect(java.util.stream.Collectors.toList());
