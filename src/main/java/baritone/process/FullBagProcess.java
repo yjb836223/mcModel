@@ -224,7 +224,7 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
                             return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
                         }
                     }
-                    return new PathingCommand(null, PathingCommandType.DEFER);
+                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
                 }
 
                 noSurfaceTicks = 0;
@@ -252,7 +252,7 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
                 aimTicks = 0;
                 state = State.WAITING_OPEN;
                 logDirect("FullBag: placing shulker at " + placedPos);
-                return new PathingCommand(null, PathingCommandType.DEFER);
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
             }
 
             case WAITING_OPEN: {
@@ -295,7 +295,7 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
                     } else {
                         state = State.TRANSFERRING;
                     }
-                    return new PathingCommand(null, PathingCommandType.DEFER);
+                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
                 }
 
                 waitTicks++;
@@ -304,7 +304,7 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
                     waitTicks = 0;
                     state = State.PLACE_SHULKER;
                 }
-                return new PathingCommand(null, PathingCommandType.DEFER);
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
             }
 
             case TRANSFERRING: {
@@ -313,7 +313,7 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
                     // Container closed unexpectedly
                     logDirect("FullBag: container closed during transfer, moving to breaking");
                     state = State.BREAKING;
-                    return new PathingCommand(null, PathingCommandType.DEFER);
+                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
                 }
 
                 int containerId = ctx.player().containerMenu.containerId;
@@ -330,7 +330,7 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
                     logDirect("FullBag: shulker is now full, closing");
                     ctx.minecraft().setScreen(null);
                     state = State.BREAKING;
-                    return new PathingCommand(null, PathingCommandType.DEFER);
+                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
                 }
 
                 // Find a player slot to transfer (container slot 27 onward = player inventory)
@@ -344,14 +344,14 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
                     // QUICK_MOVE (shift-click) to move entire stack to shulker
                     ctx.playerController().windowClick(containerId, containerSlot, 0, ClickType.QUICK_MOVE, ctx.player());
                     logDirect("FullBag: transferred stack from container slot " + containerSlot);
-                    return new PathingCommand(null, PathingCommandType.DEFER);
+                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
                 }
 
                 // Nothing left to transfer
                 logDirect("FullBag: transfer complete, closing shulker");
                 ctx.minecraft().setScreen(null);
                 state = State.BREAKING;
-                return new PathingCommand(null, PathingCommandType.DEFER);
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
             }
 
             case CLOSING: {
@@ -382,7 +382,7 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
                 } else {
                     logDirect("FullBag: placed shulker not reachable for breaking");
                 }
-                return new PathingCommand(null, PathingCommandType.DEFER);
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
             }
 
             case WAITING_PICKUP: {
@@ -422,7 +422,7 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
                     placedPos = null;
                     state = State.IDLE;
                 }
-                return new PathingCommand(null, PathingCommandType.DEFER);
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
             }
 
             case DROPPING_JUNK: {
@@ -452,7 +452,7 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
                 }
 
                 state = State.WAITING_PICKUP;
-                return new PathingCommand(null, PathingCommandType.DEFER);
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
             }
 
             case AFK_STOP: {

@@ -66,8 +66,10 @@ public final class MindFixProcess extends BaritoneProcessHelper implements IMind
         if (state == State.REPAIRING || state == State.RESTORING || state == State.PREPARE) {
             return true;
         }
-        // IDLE: only trigger when #mine is actively running
-        return allPickaxesBelowThreshold() && baritone.getMineProcess().isActive();
+        // IDLE: only trigger when #mine is running AND FullBag is not active
+        return allPickaxesBelowThreshold()
+                && baritone.getMineProcess().isActive()
+                && !baritone.getFullBagProcess().isActive();
     }
 
     @Override
@@ -119,8 +121,12 @@ public final class MindFixProcess extends BaritoneProcessHelper implements IMind
                 return onTick(calcFailed, isSafeToCancel);
             }
 
-            // Manage silk-touch pickaxe placement
+            // Manage silk-touch pickaxe (move to offhand)
             manageSilkTouchPickaxe();
+
+            // Also ensure the most-damaged non-silk-touch pick is in main hand
+            // so Mending XP goes to it
+            ensureMostDamagedPickInMainHand();
 
             // Defer to MineProcess for movement
             return new PathingCommand(null, PathingCommandType.DEFER);
@@ -156,13 +162,14 @@ public final class MindFixProcess extends BaritoneProcessHelper implements IMind
             silkTouchOriginalSlot = -1;
         }
 
-        // Restore MineProcess filter if we saved one
-        if (savedFilter != null) {
+        // Only restore MineProcess if we finished naturally (RESTORING state)
+        // If user did #stop, state won't be RESTORING, so we don't restart mining
+        if (savedFilter != null && state == State.RESTORING) {
             MineProcess mineProcess = baritone.getMineProcess();
             mineProcess.mine(savedDesiredQuantity, savedFilter);
-            savedFilter = null;
-            savedDesiredQuantity = 0;
         }
+        savedFilter = null;
+        savedDesiredQuantity = 0;
 
         state = State.IDLE;
     }
@@ -246,6 +253,33 @@ public final class MindFixProcess extends BaritoneProcessHelper implements IMind
         if (stack == null || stack.isEmpty()) return false;
         // Check by item tag or by name - use the item's registered name
         return stack.getItem().getDescriptionId().contains("pickaxe");
+    }
+
+    /**
+     * Puts the most-damaged non-silk-touch pickaxe into the main hand
+     * so Mending XP repairs it first.
+     */
+    private void ensureMostDamagedPickInMainHand() {
+        NonNullList<ItemStack> inv = ctx.player().getInventory().getNonEquipmentItems();
+        int mostDamagedSlot = -1;
+        int highestDamage = 0;
+        for (int i = 0; i < inv.size(); i++) {
+            ItemStack s = inv.get(i);
+            if (!isPickaxe(s) || hasSilkTouch(s) || s.getDamageValue() == 0) continue;
+            if (s.getDamageValue() > highestDamage) {
+                highestDamage = s.getDamageValue();
+                mostDamagedSlot = i;
+            }
+        }
+        if (mostDamagedSlot == -1) return;
+        if (mostDamagedSlot < 9) {
+            ctx.player().getInventory().setSelectedSlot(mostDamagedSlot);
+        } else {
+            ctx.playerController().windowClick(
+                    ctx.player().inventoryMenu.containerId,
+                    mostDamagedSlot, 0, ClickType.SWAP, ctx.player());
+            ctx.player().getInventory().setSelectedSlot(0);
+        }
     }
 
     /**
