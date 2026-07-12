@@ -61,6 +61,10 @@ public final class MindFixProcess extends BaritoneProcessHelper implements IMind
     private boolean savedMineScanDroppedItems = true;
     private boolean mineScanOverridden = false;
 
+    // Saved autoTool — disabled during repair so Baritone doesn't override our slot selection
+    private boolean savedAutoTool = true;
+    private boolean autoToolOverridden = false;
+
     public MindFixProcess(Baritone baritone) {
         super(baritone);
     }
@@ -115,6 +119,12 @@ public final class MindFixProcess extends BaritoneProcessHelper implements IMind
                 Baritone.settings().mineScanDroppedItems.value = false;
                 mineScanOverridden = true;
             }
+            // Disable autoTool so Baritone doesn't override our manual slot selection
+            if (!autoToolOverridden) {
+                savedAutoTool = Baritone.settings().autoTool.value;
+                Baritone.settings().autoTool.value = false;
+                autoToolOverridden = true;
+            }
 
             // Redirect MineProcess to mine XP ores
             mineProcess.mine(0, new BlockOptionalMetaLookup(
@@ -155,10 +165,14 @@ public final class MindFixProcess extends BaritoneProcessHelper implements IMind
                 silkTouchOriginalSlot = -1;
             }
 
-            // Restore mineScanDroppedItems
+            // Restore mineScanDroppedItems and autoTool
             if (mineScanOverridden) {
                 Baritone.settings().mineScanDroppedItems.value = savedMineScanDroppedItems;
                 mineScanOverridden = false;
+            }
+            if (autoToolOverridden) {
+                Baritone.settings().autoTool.value = savedAutoTool;
+                autoToolOverridden = false;
             }
 
             // Restore MineProcess to original filter
@@ -195,6 +209,10 @@ public final class MindFixProcess extends BaritoneProcessHelper implements IMind
         if (mineScanOverridden) {
             Baritone.settings().mineScanDroppedItems.value = savedMineScanDroppedItems;
             mineScanOverridden = false;
+        }
+        if (autoToolOverridden) {
+            Baritone.settings().autoTool.value = savedAutoTool;
+            autoToolOverridden = false;
         }
 
         state = State.IDLE;
