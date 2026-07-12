@@ -87,6 +87,10 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
     // Tick counter for timeouts
     private int waitTicks = 0;
 
+    // Ticks spent aiming at placement surface before clicking (gives rotation time to apply)
+    private int aimTicks = 0;
+    private static final int AIM_TICKS_REQUIRED = 3;
+
     // Ticks spent trying to find a surface to place shulker — triggers digging if too long
     private int noSurfaceTicks = 0;
     private static final int NO_SURFACE_DIG_THRESHOLD = 40;
@@ -222,16 +226,21 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
                 noSurfaceTicks = 0;
                 placedPos = surface.above();
 
-                // Look at the surface top face and right-click to place
                 Optional<Rotation> rot = RotationUtils.reachable(ctx, surface);
                 if (rot.isPresent()) {
                     baritone.getLookBehavior().updateTarget(rot.get(), true);
-                    baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, true);
-                    waitTicks = 0;
-                    state = State.WAITING_OPEN;
-                    logDirect("FullBag: placing shulker at " + placedPos);
+                    aimTicks++;
+                    if (aimTicks >= AIM_TICKS_REQUIRED) {
+                        // Rotation has had time to apply — now click
+                        baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, true);
+                        aimTicks = 0;
+                        waitTicks = 0;
+                        state = State.WAITING_OPEN;
+                        logDirect("FullBag: placing shulker at " + placedPos);
+                    }
                 } else {
                     logDirect("FullBag: surface not reachable for placement");
+                    aimTicks = 0;
                 }
                 return new PathingCommand(null, PathingCommandType.DEFER);
             }
@@ -455,6 +464,8 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
         checkedSlots.clear();
         needsPlaceCheck.clear();
         waitTicks = 0;
+        aimTicks = 0;
+        noSurfaceTicks = 0;
         checkOnly = false;
     }
 
