@@ -230,28 +230,28 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
                 noSurfaceTicks = 0;
                 placedPos = surface.above();
 
-                Optional<Rotation> rot = RotationUtils.reachable(ctx, surface);
-                if (rot.isPresent()) {
-                    // Override allowPlace so Baritone doesn't block our right-click
-                    if (!allowPlaceOverridden) {
-                        savedAllowPlace = Baritone.settings().allowPlace.value;
-                        Baritone.settings().allowPlace.value = true;
-                        allowPlaceOverridden = true;
-                    }
-                    baritone.getLookBehavior().updateTarget(rot.get(), true);
-                    aimTicks++;
-                    if (aimTicks >= AIM_TICKS_REQUIRED) {
-                        // Rotation has had time to apply — now click
-                        baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, true);
-                        aimTicks = 0;
-                        waitTicks = 0;
-                        state = State.WAITING_OPEN;
-                        logDirect("FullBag: placing shulker at " + placedPos);
-                    }
-                } else {
-                    logDirect("FullBag: surface not reachable for placement");
-                    aimTicks = 0;
+                // Override allowPlace so Baritone doesn't block placement
+                if (!allowPlaceOverridden) {
+                    savedAllowPlace = Baritone.settings().allowPlace.value;
+                    Baritone.settings().allowPlace.value = true;
+                    allowPlaceOverridden = true;
                 }
+
+                // Use processRightClickBlock directly — bypasses camera rotation requirement
+                net.minecraft.world.phys.BlockHitResult hitResult =
+                    new net.minecraft.world.phys.BlockHitResult(
+                        net.minecraft.world.phys.Vec3.atCenterOf(surface)
+                            .add(0, 0.5, 0),
+                        net.minecraft.core.Direction.UP,
+                        surface,
+                        false
+                    );
+                ctx.playerController().processRightClickBlock(
+                    ctx.player(), ctx.world(), hitResult);
+                waitTicks = 0;
+                aimTicks = 0;
+                state = State.WAITING_OPEN;
+                logDirect("FullBag: placing shulker at " + placedPos);
                 return new PathingCommand(null, PathingCommandType.DEFER);
             }
 
@@ -570,7 +570,8 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
                     BlockState above = ctx.world().getBlockState(candidate.above());
                     BlockState above2 = ctx.world().getBlockState(candidate.above().above());
 
-                    if (bs.isSolid() && above.isAir() && above2.isAir()) {
+                    if (bs.isFaceSturdy(ctx.world(), candidate, net.minecraft.core.Direction.UP)
+                            && above.isAir() && above2.isAir()) {
                         // Make sure this isn't where the player is standing (avoid blocking)
                         BlockPos abovePos = candidate.above();
                         if (!abovePos.equals(feet) && !abovePos.equals(feet.above())) {
