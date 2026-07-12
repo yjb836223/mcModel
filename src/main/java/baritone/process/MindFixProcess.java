@@ -53,6 +53,10 @@ public final class MindFixProcess extends BaritoneProcessHelper implements IMind
     private int silkTouchOriginalSlot = -1; // -1 means not moved
     private boolean silkTouchMovedToOffhand = false;
 
+    // Saved mineScanDroppedItems — disabled during repair to avoid picking up ore drops
+    private boolean savedMineScanDroppedItems = true;
+    private boolean mineScanOverridden = false;
+
     public MindFixProcess(Baritone baritone) {
         super(baritone);
     }
@@ -101,6 +105,13 @@ public final class MindFixProcess extends BaritoneProcessHelper implements IMind
             savedFilter = mineProcess.getFilter();
             savedDesiredQuantity = mineProcess.getDesiredQuantity();
 
+            // Disable drop scanning so bot doesn't chase ore drops while repairing
+            if (!mineScanOverridden) {
+                savedMineScanDroppedItems = Baritone.settings().mineScanDroppedItems.value;
+                Baritone.settings().mineScanDroppedItems.value = false;
+                mineScanOverridden = true;
+            }
+
             // Redirect MineProcess to mine XP ores
             mineProcess.mine(0, new BlockOptionalMetaLookup(
                     Blocks.NETHER_QUARTZ_ORE,
@@ -140,6 +151,12 @@ public final class MindFixProcess extends BaritoneProcessHelper implements IMind
                 silkTouchOriginalSlot = -1;
             }
 
+            // Restore mineScanDroppedItems
+            if (mineScanOverridden) {
+                Baritone.settings().mineScanDroppedItems.value = savedMineScanDroppedItems;
+                mineScanOverridden = false;
+            }
+
             // Restore MineProcess to original filter
             mineProcess.mine(savedDesiredQuantity, savedFilter);
             savedFilter = null;
@@ -170,6 +187,10 @@ public final class MindFixProcess extends BaritoneProcessHelper implements IMind
         }
         savedFilter = null;
         savedDesiredQuantity = 0;
+        if (mineScanOverridden) {
+            Baritone.settings().mineScanDroppedItems.value = savedMineScanDroppedItems;
+            mineScanOverridden = false;
+        }
 
         state = State.IDLE;
     }
