@@ -515,8 +515,12 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
 
     private boolean isInventoryFull() {
         NonNullList<ItemStack> items = ctx.player().getInventory().getNonEquipmentItems();
-        for (ItemStack stack : items) {
-            if (stack.isEmpty()) return false;
+        for (int i = 0; i < 36; i++) {
+            ItemStack stack = items.get(i);
+            // Slot has room if it's empty OR not at max stack size
+            if (stack.isEmpty() || stack.getCount() < stack.getMaxStackSize()) {
+                return false;
+            }
         }
         return true;
     }
