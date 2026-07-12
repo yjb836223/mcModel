@@ -60,14 +60,14 @@ public final class MindFixProcess extends BaritoneProcessHelper implements IMind
     @Override
     public boolean isActive() {
         if (ctx.player() == null) return false;
-        if (!Baritone.settings().mindfix.value) {
+        if (!Baritone.settings().mindfixEnabled.value) {
             return false;
         }
         if (state == State.REPAIRING || state == State.RESTORING || state == State.PREPARE) {
             return true;
         }
-        // IDLE: check if all pickaxes are below threshold
-        return allPickaxesBelowThreshold();
+        // IDLE: only trigger when #mine is actively running
+        return allPickaxesBelowThreshold() && baritone.getMineProcess().isActive();
     }
 
     @Override

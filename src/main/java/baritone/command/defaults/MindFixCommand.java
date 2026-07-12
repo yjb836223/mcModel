@@ -20,7 +20,7 @@ public class MindFixCommand extends Command {
     public void execute(String label, IArgConsumer args) throws CommandException {
         args.requireExactly(1);
         boolean enable = args.getAs(Boolean.class);
-        Baritone.settings().mindfix.value = enable;
+        Baritone.settings().mindfixEnabled.value = enable;
         logDirect("mindfix " + (enable ? "已开启" : "已关闭"));
     }
 

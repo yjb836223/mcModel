@@ -20,7 +20,7 @@ public class FullBagCommand extends Command {
     public void execute(String label, IArgConsumer args) throws CommandException {
         args.requireExactly(1);
         boolean enable = args.getAs(Boolean.class);
-        Baritone.settings().fullbag.value = enable;
+        Baritone.settings().fullbagEnabled.value = enable;
         logDirect("fullbag " + (enable ? "已开启" : "已关闭"));
     }
 

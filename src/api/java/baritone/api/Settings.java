@@ -883,12 +883,12 @@ public final class Settings {
     /**
      * When enabled, pauses #mine when ALL pickaxes are low-durability and repairs them via Mending XP.
      */
-    public final Setting<Boolean> mindfix = new Setting<>(false);
+    public final Setting<Boolean> mindfixEnabled = new Setting<>(false);
 
     /**
      * When enabled, compresses mining loot into shulker boxes when inventory is full.
      */
-    public final Setting<Boolean> fullbag = new Setting<>(false);
+    public final Setting<Boolean> fullbagEnabled = new Setting<>(false);
 
     /**
      * Always prefer silk touch tools over regular tools. This will not sacrifice speed, but it will always prefer silk

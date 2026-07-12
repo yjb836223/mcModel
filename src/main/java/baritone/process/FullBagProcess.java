@@ -87,6 +87,10 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
     // Tick counter for timeouts
     private int waitTicks = 0;
 
+    // Ticks spent trying to find a surface to place shulker — triggers digging if too long
+    private int noSurfaceTicks = 0;
+    private static final int NO_SURFACE_DIG_THRESHOLD = 40;
+
     public FullBagProcess(Baritone baritone) {
         super(baritone);
     }
@@ -94,7 +98,7 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
     @Override
     public boolean isActive() {
         if (ctx.player() == null) return false;
-        if (!Baritone.settings().fullbag.value) {
+        if (!Baritone.settings().fullbagEnabled.value) {
             state = State.IDLE;
             return false;
         }
@@ -194,10 +198,28 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
 
                 BlockPos surface = findSolidSurface();
                 if (surface == null) {
-                    logDirect("FullBag: no solid surface found to place shulker");
+                    noSurfaceTicks++;
+                    if (noSurfaceTicks >= NO_SURFACE_DIG_THRESHOLD) {
+                        // No surface after waiting — try to dig a block to make space
+                        BlockPos digTarget = findDiggableBlock();
+                        if (digTarget != null) {
+                            logDirect("FullBag: no surface, digging block at " + digTarget + " to make space");
+                            noSurfaceTicks = 0;
+                            Optional<Rotation> digRot = RotationUtils.reachable(ctx, digTarget);
+                            if (digRot.isPresent()) {
+                                baritone.getLookBehavior().updateTarget(digRot.get(), true);
+                                baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, true);
+                            }
+                        } else {
+                            logDirect("FullBag: cannot find space to place shulker, stopping");
+                            state = State.AFK_STOP;
+                            return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
+                        }
+                    }
                     return new PathingCommand(null, PathingCommandType.DEFER);
                 }
 
+                noSurfaceTicks = 0;
                 placedPos = surface.above();
 
                 // Look at the surface top face and right-click to place
@@ -525,6 +547,29 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
                             return candidate;
                         }
                     }
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Finds a breakable non-air block near the player to create space for shulker placement.
+     */
+    private BlockPos findDiggableBlock() {
+        BlockPos feet = new BlockPos(
+                (int) Math.floor(ctx.player().position().x),
+                (int) Math.floor(ctx.player().position().y),
+                (int) Math.floor(ctx.player().position().z)
+        );
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                if (dx == 0 && dz == 0) continue;
+                BlockPos candidate = feet.offset(dx, 0, dz);
+                BlockState bs = ctx.world().getBlockState(candidate);
+                // Only dig blocks that are solid and not bedrock
+                if (bs.isSolid() && !bs.isAir()) {
+                    return candidate;
                 }
             }
         }
