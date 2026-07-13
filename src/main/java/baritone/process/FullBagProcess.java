@@ -369,27 +369,69 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
                 BlockOptionalMetaLookup mineFilter = ((MineProcess) baritone.getMineProcess()).getFilter();
 
                 if (mineFilter == null) {
-                    // Cannot identify mine targets — close without transferring
                     logDirect("FullBag: no mine filter active, closing shulker");
                     ctx.minecraft().setScreen(null);
                     state = State.BREAKING;
                     return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
                 }
 
-                // QUICK_MOVE mine-target stacks one per tick (full stack, no leave-1)
+                // 3-phase: pick up → put 1 back → deposit rest in shulker
+                // Phase 1: put 1 back to source player slot (right-click)
+                if (transferPhase == 1 && transferSourceSlot >= 0) {
+                    ctx.playerController().windowClick(containerId, transferSourceSlot, 1, ClickType.PICKUP, ctx.player());
+                    transferPhase = 2;
+                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                }
+                // Phase 2: deposit remaining cursor items into best shulker slot
+                if (transferPhase == 2 && transferSourceSlot >= 0) {
+                    // Figure out what item we're holding by looking at source slot (now has 1)
+                    ItemStack sourceItem = ctx.player().containerMenu.getSlot(transferSourceSlot).getItem();
+                    int targetShulkerSlot = -1;
+                    // Prefer a partial shulker slot with the same item that can accept the cursor
+                    for (int s = 0; s < 27; s++) {
+                        ItemStack shulkerSlot = ctx.player().containerMenu.getSlot(s).getItem();
+                        if (!shulkerSlot.isEmpty()
+                                && ItemStack.isSameItemSameComponents(shulkerSlot, sourceItem)
+                                && shulkerSlot.getCount() < shulkerSlot.getMaxStackSize()) {
+                            targetShulkerSlot = s;
+                            break;
+                        }
+                    }
+                    // Fall back to first empty shulker slot
+                    if (targetShulkerSlot < 0) {
+                        for (int s = 0; s < 27; s++) {
+                            if (ctx.player().containerMenu.getSlot(s).getItem().isEmpty()) {
+                                targetShulkerSlot = s;
+                                break;
+                            }
+                        }
+                    }
+                    if (targetShulkerSlot >= 0) {
+                        ctx.playerController().windowClick(containerId, targetShulkerSlot, 0, ClickType.PICKUP, ctx.player());
+                    }
+                    transferPhase = 0;
+                    transferSourceSlot = -1;
+                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                }
+
+                // Phase 0: find next mine-target player slot to transfer (count > 1)
                 for (int containerSlot = 27; containerSlot < ctx.player().containerMenu.slots.size(); containerSlot++) {
                     ItemStack stack = ctx.player().containerMenu.getSlot(containerSlot).getItem();
-                    if (stack.isEmpty()) continue;
+                    if (stack.isEmpty() || stack.getCount() <= 1) continue;
                     if (isProtected(stack)) continue;
-                    if (!mineFilter.has(stack)) continue; // only move mine target items
+                    if (!mineFilter.has(stack)) continue;
 
-                    ctx.playerController().windowClick(containerId, containerSlot, 0, ClickType.QUICK_MOVE, ctx.player());
-                    logDirect("FullBag: moved mine-target stack from slot " + containerSlot);
+                    // Left-click to pick up the full stack (cursor = all, player slot = empty)
+                    ctx.playerController().windowClick(containerId, containerSlot, 0, ClickType.PICKUP, ctx.player());
+                    transferSourceSlot = containerSlot;
+                    transferPhase = 1;
                     return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
                 }
 
                 // Nothing left to transfer
                 logDirect("FullBag: transfer complete, closing shulker");
+                transferPhase = 0;
+                transferSourceSlot = -1;
                 ctx.minecraft().setScreen(null);
                 state = State.BREAKING;
                 return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
