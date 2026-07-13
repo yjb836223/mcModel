@@ -368,45 +368,28 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
 
                 BlockOptionalMetaLookup mineFilter = ((MineProcess) baritone.getMineProcess()).getFilter();
 
-                // 3-phase click to transfer stack-1 items into shulker, leaving 1 in player slot
-                if (transferPhase == 1 && transferSourceSlot >= 0) {
-                    // Phase 1: put 1 back into source slot (right-click with cursor holding all)
-                    ctx.playerController().windowClick(containerId, transferSourceSlot, 1, ClickType.PICKUP, ctx.player());
-                    transferPhase = 2;
-                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
-                }
-                if (transferPhase == 2 && transferSourceSlot >= 0) {
-                    // Phase 2: left-click first empty shulker slot to deposit remaining
-                    for (int s = 0; s < 27; s++) {
-                        if (ctx.player().containerMenu.getSlot(s).getItem().isEmpty()) {
-                            ctx.playerController().windowClick(containerId, s, 0, ClickType.PICKUP, ctx.player());
-                            break;
-                        }
-                    }
-                    transferPhase = 0;
-                    transferSourceSlot = -1;
+                if (mineFilter == null) {
+                    // Cannot identify mine targets — close without transferring
+                    logDirect("FullBag: no mine filter active, closing shulker");
+                    ctx.minecraft().setScreen(null);
+                    state = State.BREAKING;
                     return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
                 }
 
-                // Phase 0: find next mine-target slot to transfer
+                // QUICK_MOVE mine-target stacks one per tick (full stack, no leave-1)
                 for (int containerSlot = 27; containerSlot < ctx.player().containerMenu.slots.size(); containerSlot++) {
                     ItemStack stack = ctx.player().containerMenu.getSlot(containerSlot).getItem();
-                    if (stack.isEmpty() || stack.getCount() <= 1) continue;
+                    if (stack.isEmpty()) continue;
                     if (isProtected(stack)) continue;
-                    if (mineFilter != null && !mineFilter.has(stack)) continue; // only mine targets
+                    if (!mineFilter.has(stack)) continue; // only move mine target items
 
-                    // Left-click to pick up the full stack
-                    ctx.playerController().windowClick(containerId, containerSlot, 0, ClickType.PICKUP, ctx.player());
-                    transferSourceSlot = containerSlot;
-                    transferPhase = 1;
-                    logDirect("FullBag: transferring from container slot " + containerSlot);
+                    ctx.playerController().windowClick(containerId, containerSlot, 0, ClickType.QUICK_MOVE, ctx.player());
+                    logDirect("FullBag: moved mine-target stack from slot " + containerSlot);
                     return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
                 }
 
                 // Nothing left to transfer
                 logDirect("FullBag: transfer complete, closing shulker");
-                transferPhase = 0;
-                transferSourceSlot = -1;
                 ctx.minecraft().setScreen(null);
                 state = State.BREAKING;
                 return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
@@ -446,43 +429,49 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
             case WAITING_PICKUP: {
                 baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
 
-                // Check if there are item entities nearby that are shulker boxes
-                boolean shulkerEntityNearby = false;
+                // Find the dropped shulker box ItemEntity
+                BlockPos dropPos = null;
                 for (Entity entity : ((net.minecraft.client.multiplayer.ClientLevel) ctx.world()).entitiesForRendering()) {
-                    if (entity instanceof ItemEntity ie) {
+                    if (entity instanceof ItemEntity ie && isShulkerBox(ie.getItem())) {
                         double dist = entity.distanceTo(ctx.player());
-                        if (dist <= 5.0 && isShulkerBox(ie.getItem())) {
-                            shulkerEntityNearby = true;
+                        if (dist <= 8.0) {
+                            dropPos = entity.blockPosition();
                             break;
                         }
                     }
                 }
 
-                if (!shulkerEntityNearby) {
-                    // No ItemEntity nearby — either picked up naturally or manually
-                    // Check if block at placedPos is also gone (confirms it was broken)
+                if (dropPos == null) {
+                    // No shulker ItemEntity visible — check if block is also gone
                     boolean blockGone = placedPos == null ||
                         !(ctx.world().getBlockState(placedPos).getBlock() instanceof ShulkerBoxBlock);
                     if (blockGone) {
-                        // Shulker was broken and picked up (by bot or player)
-                        logDirect("FullBag: shulker picked up, resuming");
+                        // Shulker was picked up (by bot or player)
+                        logDirect("FullBag: shulker picked up, resuming mine");
                         placedPos = null;
                         activeShulkerSlot = -1;
                         checkedSlots.clear();
                         needsPlaceCheck.clear();
+                        waitTicks = 0;
                         state = State.IDLE;
                         return new PathingCommand(null, PathingCommandType.DEFER);
                     }
+                    waitTicks++;
+                    if (waitTicks > 40) {
+                        logDirect("FullBag: timed out waiting for shulker pickup");
+                        waitTicks = 0;
+                        placedPos = null;
+                        state = State.IDLE;
+                    }
+                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
                 }
 
-                waitTicks++;
-                if (waitTicks > 100) {
-                    logDirect("FullBag: timed out waiting for shulker pickup");
-                    waitTicks = 0;
-                    placedPos = null;
-                    state = State.IDLE;
-                }
-                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                // Path toward the dropped shulker to pick it up (auto-pickup radius ~1.5 blocks)
+                waitTicks = 0;
+                return new PathingCommand(
+                    new baritone.api.pathing.goals.GoalNear(dropPos, 1),
+                    PathingCommandType.SET_GOAL_AND_PATH
+                );
             }
 
             case DROPPING_JUNK: {
