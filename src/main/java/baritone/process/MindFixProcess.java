@@ -1,18 +1,7 @@
 /*
  * This file is part of Baritone.
  *
- * Baritone is free software: you can redistribute it and/or modify
- * it under the terms of the GNU Lesser General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * Baritone is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with Baritone.  If not, see <https://www.gnu.org/licenses/>.
+ * Baritone is free software; see LICENSE for details.
  */
 
 package baritone.process;
@@ -34,208 +23,198 @@ import net.minecraft.world.item.enchantment.ItemEnchantments;
 import net.minecraft.world.level.block.Blocks;
 
 /**
- * MindFixProcess: automatically repairs pickaxes using Mending XP from mining.
- * When all pickaxes in inventory are low on durability, redirects MineProcess
- * to mine XP-rich ores (quartz, diamonds) until pickaxes are fully repaired.
+ * MindFixProcess — repairs Mending-enchanted pickaxes during #mine.
+ *
+ * Phase 1 (any Mending pick ≤ threshold+30):
+ *   Elevate itemSaverThreshold so Baritone naturally skips low picks via getBestSlot().
+ *   Mining continues uninterrupted with a healthier pick.
+ *
+ * Phase 2 (ALL Mending picks ≤ threshold+30):
+ *   Redirect MineProcess to XP ores (diamond/quartz) to trigger Mending repairs.
+ *   Manage which pick is in offhand vs main hand explicitly.
+ *
+ * Done: when no Mending pick has remaining ≤ threshold+30 → restore everything.
  */
 public final class MindFixProcess extends BaritoneProcessHelper implements IMindFixProcess {
 
-    private enum State {
-        IDLE, PREPARE, REPAIRING, RESTORING
-    }
+    private enum State { IDLE, REPAIRING, RESTORING }
 
     private State state = State.IDLE;
 
-    // Saved MineProcess state for restoration
-    private BlockOptionalMetaLookup savedFilter;
-    private int savedDesiredQuantity;
+    // MineProcess state saved at Phase 2 entry, restored on exit
+    private BlockOptionalMetaLookup savedFilter = null;
+    private int savedDesiredQuantity = 0;
 
-    // Track if silk-touch pick was moved to offhand
-    private int silkTouchOriginalSlot = -1; // -1 means not moved
-    private boolean silkTouchMovedToOffhand = false;
+    // All Baritone settings saved once on first activation, restored on cleanup()
+    private boolean settingsSaved = false;
+    private boolean savedItemSaver;
+    private int savedItemSaverThreshold;
+    private boolean savedAutoTool;
+    private boolean savedMineScanDroppedItems;
 
-    // Track which inventory slot is currently being repaired (-1 = none)
-    // Only switch to a new pick once the current one is fully repaired
+    // Silk touch pick in offhand (moves there so non-silk pick can mine XP ores)
+    private boolean silkTouchInOffhand = false;
+    private int silkTouchOriginalSlot = -1;
+
+    // Low-durability pick in offhand (remaining ≤ savedItemSaverThreshold — can't mine)
+    private boolean lowDurabilityInOffhand = false;
+    private int lowDurabilityOriginalSlot = -1;
+
+    // The non-silk, Mending, above-saver-threshold pick currently being held for XP repair
     private int currentRepairSlot = -1;
 
-    // Saved mineScanDroppedItems — disabled during repair to avoid picking up ore drops
-    private boolean savedMineScanDroppedItems = true;
-    private boolean mineScanOverridden = false;
-
-    // Saved autoTool — disabled during repair so Baritone doesn't override our slot selection
-    private boolean savedAutoTool = true;
-    private boolean autoToolOverridden = false;
-
-    // Saved itemSaver settings — overridden during repair, must be restored
-    private boolean savedItemSaver = false;
-    private int savedItemSaverThreshold = 10;
+    private static final BlockOptionalMetaLookup XP_ORES = new BlockOptionalMetaLookup(
+            Blocks.NETHER_QUARTZ_ORE,
+            Blocks.DIAMOND_ORE,
+            Blocks.DEEPSLATE_DIAMOND_ORE
+    );
 
     public MindFixProcess(Baritone baritone) {
         super(baritone);
     }
 
+    // ── Activation ────────────────────────────────────────────────────────────
+
     @Override
     public boolean isActive() {
         if (ctx.player() == null) return false;
         if (!Baritone.settings().mindfixEnabled.value) {
+            if (settingsSaved) cleanup();
             return false;
         }
-        if (state == State.REPAIRING || state == State.RESTORING || state == State.PREPARE) {
-            return true;
-        }
-        // IDLE: active when ANY pick is low (for pick-switching) or ALL are low (for XP mining)
-        return anyPickaxeBelowThreshold()
+        if (state == State.REPAIRING || state == State.RESTORING) return true;
+        // IDLE: only active when a Mending pick needs attention and #mine is running
+        return anyMendingPickBelowThreshold()
                 && baritone.getMineProcess().isActive()
                 && !baritone.getFullBagProcess().isActive();
     }
 
     @Override
+    public double priority() { return 2.0; }
+
+    @Override
+    public boolean isTemporary() { return false; }
+
+    // ── Tick ─────────────────────────────────────────────────────────────────
+
+    @Override
     public PathingCommand onTick(boolean calcFailed, boolean isSafeToCancel) {
-        MineProcess mineProcess = baritone.getMineProcess();
+        switch (state) {
+            case IDLE:      return tickIdle();
+            case REPAIRING: return tickRepairing();
+            case RESTORING: return tickRestoring();
+            default:        return new PathingCommand(null, PathingCommandType.DEFER);
+        }
+    }
 
-        if (state == State.IDLE) {
-            if (allPickaxesBelowThreshold()) {
-                // All picks are low — redirect to XP ore mining for full repair
-                logDirect("MindFix: all pickaxes low, starting XP repair mining");
-                state = State.PREPARE;
-            } else {
-                // Only some picks are low — disable autoTool so Baritone can't re-select the low pick
-                if (!autoToolOverridden) {
-                    savedAutoTool = Baritone.settings().autoTool.value;
-                    Baritone.settings().autoTool.value = false;
-                    autoToolOverridden = true;
-                }
-                switchAwayFromLowPick();
-                return new PathingCommand(null, PathingCommandType.DEFER);
-            }
+    private PathingCommand tickIdle() {
+        // Save all settings exactly once when we first become active
+        if (!settingsSaved) {
+            savedItemSaver            = Baritone.settings().itemSaver.value;
+            savedItemSaverThreshold   = Baritone.settings().itemSaverThreshold.value;
+            savedAutoTool             = Baritone.settings().autoTool.value;
+            savedMineScanDroppedItems = Baritone.settings().mineScanDroppedItems.value;
+            settingsSaved = true;
         }
 
-        if (state == State.PREPARE) {
-            // Save and override itemSaver settings
-            savedItemSaver = Baritone.settings().itemSaver.value;
-            savedItemSaverThreshold = Baritone.settings().itemSaverThreshold.value;
-            Baritone.settings().itemSaver.value = true;
-            if (Baritone.settings().itemSaverThreshold.value < 20) {
-                Baritone.settings().itemSaverThreshold.value = 20;
-            }
+        int triggerThreshold = savedItemSaverThreshold + 30;
 
-            // Save MineProcess filter and quantity
-            savedFilter = mineProcess.getFilter();
-            savedDesiredQuantity = mineProcess.getDesiredQuantity();
+        // Phase 1: Raise itemSaverThreshold so Baritone's getBestSlot() skips low picks
+        Baritone.settings().itemSaver.value          = true;
+        Baritone.settings().itemSaverThreshold.value = triggerThreshold;
 
-            // Disable drop scanning so bot doesn't chase ore drops while repairing
-            if (!mineScanOverridden) {
-                savedMineScanDroppedItems = Baritone.settings().mineScanDroppedItems.value;
-                Baritone.settings().mineScanDroppedItems.value = false;
-                mineScanOverridden = true;
-            }
-            // Disable autoTool so Baritone doesn't override our manual slot selection
-            if (!autoToolOverridden) {
-                savedAutoTool = Baritone.settings().autoTool.value;
-                Baritone.settings().autoTool.value = false;
-                autoToolOverridden = true;
-            }
+        if (allMendingPicksBelowThreshold(triggerThreshold)) {
+            // Phase 2: ALL Mending picks are low — redirect to XP ore mining
+            // Restore threshold to user's original so picks at 21–50 can still mine XP ores
+            Baritone.settings().itemSaverThreshold.value  = savedItemSaverThreshold;
+            Baritone.settings().autoTool.value            = false;
+            Baritone.settings().mineScanDroppedItems.value = false;
 
-            // Redirect MineProcess to mine XP ores
-            mineProcess.mine(0, new BlockOptionalMetaLookup(
-                    Blocks.NETHER_QUARTZ_ORE,
-                    Blocks.DIAMOND_ORE,
-                    Blocks.DEEPSLATE_DIAMOND_ORE
-            ));
-            logDirect("MindFix: redirecting mine to XP ores for Mending repair");
+            MineProcess mine = (MineProcess) baritone.getMineProcess();
+            savedFilter          = mine.getFilter();
+            savedDesiredQuantity = mine.getDesiredQuantity();
+            mine.mine(0, XP_ORES);
 
+            logDirect("MindFix: all Mending picks low, redirecting to XP ore mining");
             state = State.REPAIRING;
-            return new PathingCommand(null, PathingCommandType.DEFER);
+            return tickRepairing();
         }
 
-        if (state == State.REPAIRING) {
-            // Check if all pickaxes are fully repaired
-            if (allPickaxesFullyRepaired()) {
-                logDirect("MindFix: all pickaxes fully repaired, restoring");
-                state = State.RESTORING;
-                return onTick(calcFailed, isSafeToCancel);
-            }
+        // Phase 1 only: itemSaver handles pick avoidance automatically — just defer
+        return new PathingCommand(null, PathingCommandType.DEFER);
+    }
 
-            // Manage silk-touch pickaxe (move to offhand)
-            manageSilkTouchPickaxe();
-
-            // Also ensure the most-damaged non-silk-touch pick is in main hand
-            // so Mending XP goes to it
-            ensureMostDamagedPickInMainHand();
-
-            // Defer to MineProcess for movement
-            return new PathingCommand(null, PathingCommandType.DEFER);
+    private PathingCommand tickRepairing() {
+        // Safety: if MineProcess stopped (path failure, #stop), exit gracefully
+        if (!baritone.getMineProcess().isActive()) {
+            logDirect("MindFix: MineProcess no longer active, stopping repair");
+            state = State.RESTORING;
+            return tickRestoring();
         }
 
-        if (state == State.RESTORING) {
-            // Restore silk-touch pick to original slot if it was moved to offhand
-            if (silkTouchMovedToOffhand) {
-                restoreSilkTouchFromOffhand();
-                silkTouchMovedToOffhand = false;
-                silkTouchOriginalSlot = -1;
-            }
+        int triggerThreshold = savedItemSaverThreshold + 30;
+        if (!anyMendingPickBelowThreshold(triggerThreshold)) {
+            logDirect("MindFix: all Mending picks repaired, restoring");
+            state = State.RESTORING;
+            return tickRestoring();
+        }
 
-            // Restore all overridden settings
-            Baritone.settings().itemSaver.value = savedItemSaver;
-            Baritone.settings().itemSaverThreshold.value = savedItemSaverThreshold;
-            if (mineScanOverridden) {
-                Baritone.settings().mineScanDroppedItems.value = savedMineScanDroppedItems;
-                mineScanOverridden = false;
-            }
-            if (autoToolOverridden) {
-                Baritone.settings().autoTool.value = savedAutoTool;
-                autoToolOverridden = false;
-            }
+        manageSilkTouchPick();
+        manageLowDurabilityPick();
+        ensureRepairPickInMainHand();
 
-            // Restore MineProcess to original filter
-            mineProcess.mine(savedDesiredQuantity, savedFilter);
+        return new PathingCommand(null, PathingCommandType.DEFER);
+    }
+
+    private PathingCommand tickRestoring() {
+        // Return silk touch pick to its original slot
+        if (silkTouchInOffhand) {
+            swapOffhandWithSlot(silkTouchOriginalSlot);
+            silkTouchInOffhand    = false;
+            silkTouchOriginalSlot = -1;
+        }
+        // Return low-durability pick to its original slot
+        if (lowDurabilityInOffhand) {
+            swapOffhandWithSlot(lowDurabilityOriginalSlot);
+            lowDurabilityInOffhand    = false;
+            lowDurabilityOriginalSlot = -1;
+        }
+        // Restore MineProcess to original mining target
+        if (savedFilter != null) {
+            ((MineProcess) baritone.getMineProcess()).mine(savedDesiredQuantity, savedFilter);
             savedFilter = null;
-            savedDesiredQuantity = 0;
-
-            logDirect("MindFix: restoration complete, resuming original mining");
-            state = State.IDLE;
-            return new PathingCommand(null, PathingCommandType.DEFER);
         }
-
+        cleanup();
+        logDirect("MindFix: done, resuming original mining");
+        state             = State.IDLE;
+        currentRepairSlot = -1;
+        savedDesiredQuantity = 0;
         return new PathingCommand(null, PathingCommandType.DEFER);
     }
 
     @Override
     public void onLostControl() {
-        // Restore silk-touch pick if it was moved to offhand
-        if (silkTouchMovedToOffhand) {
-            restoreSilkTouchFromOffhand();
-            silkTouchMovedToOffhand = false;
+        // Return any picks moved to offhand
+        if (silkTouchInOffhand) {
+            swapOffhandWithSlot(silkTouchOriginalSlot);
+            silkTouchInOffhand    = false;
             silkTouchOriginalSlot = -1;
         }
-
-        // Always restore MineProcess if we redirected it — ensures FullBag and other
-        // higher-priority processes see the correct mine filter after taking control from us.
-        // (#stop will subsequently cancel MineProcess via its own onLostControl)
+        if (lowDurabilityInOffhand) {
+            swapOffhandWithSlot(lowDurabilityOriginalSlot);
+            lowDurabilityInOffhand    = false;
+            lowDurabilityOriginalSlot = -1;
+        }
+        // Always restore MineProcess so FullBag (or other higher-priority processes) see
+        // the correct mine filter when they take control from us
         if (savedFilter != null) {
-            MineProcess mineProcess = baritone.getMineProcess();
-            mineProcess.mine(savedDesiredQuantity, savedFilter);
+            ((MineProcess) baritone.getMineProcess()).mine(savedDesiredQuantity, savedFilter);
+            savedFilter = null;
         }
-        savedFilter = null;
-        savedDesiredQuantity = 0;
+        cleanup();
+        state             = State.IDLE;
         currentRepairSlot = -1;
-        Baritone.settings().itemSaver.value = savedItemSaver;
-        Baritone.settings().itemSaverThreshold.value = savedItemSaverThreshold;
-        if (mineScanOverridden) {
-            Baritone.settings().mineScanDroppedItems.value = savedMineScanDroppedItems;
-            mineScanOverridden = false;
-        }
-        if (autoToolOverridden) {
-            Baritone.settings().autoTool.value = savedAutoTool;
-            autoToolOverridden = false;
-        }
-
-        state = State.IDLE;
-    }
-
-    @Override
-    public double priority() {
-        return 2.0;
+        savedDesiredQuantity = 0;
     }
 
     @Override
@@ -243,167 +222,127 @@ public final class MindFixProcess extends BaritoneProcessHelper implements IMind
         return "MindFix [" + state + "]";
     }
 
-    /** Returns true if ANY pickaxe has remaining durability <= (itemSaverThreshold + 30). */
-    private boolean anyPickaxeBelowThreshold() {
-        int threshold = Baritone.settings().itemSaverThreshold.value + 30;
-        NonNullList<ItemStack> items = ctx.player().getInventory().getNonEquipmentItems();
-        for (ItemStack stack : items) {
-            if (isPickaxe(stack) && (stack.getMaxDamage() - stack.getDamageValue()) <= threshold) return true;
-        }
-        ItemStack offhand = ctx.player().getOffhandItem();
-        return isPickaxe(offhand) && (offhand.getMaxDamage() - offhand.getDamageValue()) <= threshold;
-    }
+    // ── Pick management ───────────────────────────────────────────────────────
 
-    /**
-     * While only SOME picks are low (not all), switch the active hotbar slot away from
-     * any pick that is at or below threshold+30, preferring a healthier pick.
-     */
-    private void switchAwayFromLowPick() {
-        int threshold = Baritone.settings().itemSaverThreshold.value + 30;
-        NonNullList<ItemStack> inv = ctx.player().getInventory().getNonEquipmentItems();
+    /** If the currently held pick has Silk Touch, move it to offhand so a non-silk pick can mine. */
+    private void manageSilkTouchPick() {
+        if (silkTouchInOffhand) return;
         int selected = ctx.player().getInventory().getSelectedSlot();
-        ItemStack current = inv.get(selected);
-
-        // Only act if the currently held pick is below threshold
-        if (!isPickaxe(current) || (current.getMaxDamage() - current.getDamageValue()) > threshold) return;
-
-        // Find a healthier pick in hotbar first
-        for (int i = 0; i < 9; i++) {
-            if (i == selected) continue;
-            ItemStack s = inv.get(i);
-            if (isPickaxe(s) && (s.getMaxDamage() - s.getDamageValue()) > threshold) {
-                ctx.player().getInventory().setSelectedSlot(i);
-                return;
-            }
-        }
-        // Try main inventory — swap to hotbar slot 0
-        for (int i = 9; i < 36; i++) {
-            ItemStack s = inv.get(i);
-            if (isPickaxe(s) && (s.getMaxDamage() - s.getDamageValue()) > threshold) {
-                ctx.playerController().windowClick(
-                        ctx.player().inventoryMenu.containerId,
-                        i, 0, ClickType.SWAP, ctx.player());
-                ctx.player().getInventory().setSelectedSlot(0);
-                return;
-            }
+        ItemStack current = ctx.player().getInventory().getNonEquipmentItems().get(selected);
+        if (isPickaxe(current) && hasSilkTouch(current)) {
+            swapSlotWithOffhand(selected);
+            silkTouchOriginalSlot = selected;
+            silkTouchInOffhand    = true;
+            logDirect("MindFix: silk touch pick moved to offhand");
         }
     }
 
-    /**
-     * Returns true if ALL pickaxes in inventory have remaining durability <= (itemSaverThreshold + 30).
-     * Returns false if no pickaxes exist.
-     */
-    private boolean allPickaxesBelowThreshold() {
-        int threshold = Baritone.settings().itemSaverThreshold.value + 30;
-        NonNullList<ItemStack> items = ctx.player().getInventory().getNonEquipmentItems();
+    /** If the current repair pick can't mine (remaining ≤ savedItemSaverThreshold), move it to offhand. */
+    private void manageLowDurabilityPick() {
+        if (lowDurabilityInOffhand || silkTouchInOffhand || currentRepairSlot < 0) return;
+        NonNullList<ItemStack> inv = ctx.player().getInventory().getNonEquipmentItems();
+        if (currentRepairSlot >= inv.size()) { currentRepairSlot = -1; return; }
+        ItemStack pick = inv.get(currentRepairSlot);
+        if (!isPickaxe(pick) || hasSilkTouch(pick)) { currentRepairSlot = -1; return; }
+        int remaining = pick.getMaxDamage() - pick.getDamageValue();
+        if (remaining <= savedItemSaverThreshold) {
+            swapSlotWithOffhand(currentRepairSlot);
+            lowDurabilityOriginalSlot = currentRepairSlot;
+            lowDurabilityInOffhand    = true;
+            currentRepairSlot         = -1;
+            logDirect("MindFix: low-durability pick moved to offhand for Mending");
+        }
+    }
 
-        boolean foundAny = false;
-        for (ItemStack stack : items) {
-            if (isPickaxe(stack)) {
-                foundAny = true;
-                int remaining = stack.getMaxDamage() - stack.getDamageValue();
-                if (remaining > threshold) {
-                    return false; // at least one pickaxe is fine
+    /** Put the most damaged (but still mineable) Mending pick in the main hand for XP repair. */
+    private void ensureRepairPickInMainHand() {
+        NonNullList<ItemStack> inv = ctx.player().getInventory().getNonEquipmentItems();
+
+        // Stick with the current slot until it's fully repaired or drops below saver threshold
+        if (currentRepairSlot >= 0 && currentRepairSlot < inv.size()) {
+            ItemStack pick = inv.get(currentRepairSlot);
+            if (isPickaxe(pick) && !hasSilkTouch(pick) && pick.getDamageValue() > 0) {
+                int remaining = pick.getMaxDamage() - pick.getDamageValue();
+                if (remaining > savedItemSaverThreshold) {
+                    putSlotInMainHand(currentRepairSlot);
+                    return;
                 }
+                // Dropped below saver threshold — manageLowDurabilityPick will handle offhand
+                return;
             }
-        }
-        // Also check offhand
-        ItemStack offhand = ctx.player().getOffhandItem();
-        if (isPickaxe(offhand)) {
-            foundAny = true;
-            int remaining = offhand.getMaxDamage() - offhand.getDamageValue();
-            if (remaining > threshold) {
-                return false;
-            }
+            currentRepairSlot = -1; // pick repaired or gone
         }
 
+        // Find the most damaged Mending, non-silk, above-threshold pick
+        int bestSlot = -1, maxDamage = 0;
+        for (int i = 0; i < inv.size(); i++) {
+            ItemStack s = inv.get(i);
+            if (!isPickaxe(s) || hasSilkTouch(s) || !hasMending(s)) continue;
+            int remaining = s.getMaxDamage() - s.getDamageValue();
+            if (remaining > savedItemSaverThreshold && s.getDamageValue() > maxDamage) {
+                maxDamage = s.getDamageValue();
+                bestSlot  = i;
+            }
+        }
+        if (bestSlot < 0) return;
+        currentRepairSlot = bestSlot;
+        putSlotInMainHand(bestSlot);
+    }
+
+    // ── Utility ───────────────────────────────────────────────────────────────
+
+    /** Restore all Baritone settings to values saved at activation time. No-op if not saved. */
+    private void cleanup() {
+        if (!settingsSaved) return;
+        Baritone.settings().itemSaver.value            = savedItemSaver;
+        Baritone.settings().itemSaverThreshold.value   = savedItemSaverThreshold;
+        Baritone.settings().autoTool.value             = savedAutoTool;
+        Baritone.settings().mineScanDroppedItems.value = savedMineScanDroppedItems;
+        settingsSaved = false;
+    }
+
+    /** Returns true if ANY Mending pick has remaining ≤ (savedItemSaverThreshold + 30). */
+    private boolean anyMendingPickBelowThreshold() {
+        int t = settingsSaved ? savedItemSaverThreshold + 30
+                              : Baritone.settings().itemSaverThreshold.value + 30;
+        return anyMendingPickBelowThreshold(t);
+    }
+
+    private boolean anyMendingPickBelowThreshold(int threshold) {
+        for (ItemStack s : ctx.player().getInventory().getNonEquipmentItems()) {
+            if (isPickaxe(s) && hasMending(s) && (s.getMaxDamage() - s.getDamageValue()) <= threshold) return true;
+        }
+        ItemStack oh = ctx.player().getOffhandItem();
+        return isPickaxe(oh) && hasMending(oh) && (oh.getMaxDamage() - oh.getDamageValue()) <= threshold;
+    }
+
+    /** Returns true if ALL Mending picks have remaining ≤ threshold (and at least one exists). */
+    private boolean allMendingPicksBelowThreshold(int threshold) {
+        boolean foundAny = false;
+        for (ItemStack s : ctx.player().getInventory().getNonEquipmentItems()) {
+            if (!isPickaxe(s) || !hasMending(s)) continue;
+            foundAny = true;
+            if ((s.getMaxDamage() - s.getDamageValue()) > threshold) return false;
+        }
+        ItemStack oh = ctx.player().getOffhandItem();
+        if (isPickaxe(oh) && hasMending(oh)) {
+            foundAny = true;
+            if ((oh.getMaxDamage() - oh.getDamageValue()) > threshold) return false;
+        }
         return foundAny;
     }
 
-    /**
-     * Returns true if all pickaxes in inventory have getDamageValue() == 0 (fully repaired).
-     */
-    private boolean allPickaxesFullyRepaired() {
-        NonNullList<ItemStack> items = ctx.player().getInventory().getNonEquipmentItems();
-        for (ItemStack stack : items) {
-            if (isPickaxe(stack) && stack.getDamageValue() > 0) {
-                return false;
-            }
-        }
-        ItemStack offhand = ctx.player().getOffhandItem();
-        if (isPickaxe(offhand) && offhand.getDamageValue() > 0) {
-            return false;
-        }
-        return true;
+    /** Swap the item at inventory slot [slot] with the offhand slot using SWAP button 40. */
+    private void swapSlotWithOffhand(int slot) {
+        int containerSlot = slot < 9 ? slot + 36 : slot;
+        ctx.playerController().windowClick(
+                ctx.player().inventoryMenu.containerId,
+                containerSlot, 40, ClickType.SWAP, ctx.player());
     }
 
-    /**
-     * Returns true if the item stack has the Silk Touch enchantment.
-     */
-    private boolean hasSilkTouch(ItemStack stack) {
-        if (stack.isEmpty()) return false;
-        ItemEnchantments enchantments = stack.getEnchantments();
-        for (Holder<Enchantment> enchant : enchantments.keySet()) {
-            if (enchant.is(Enchantments.SILK_TOUCH) && enchantments.getLevel(enchant) > 0) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private boolean isPickaxe(ItemStack stack) {
-        if (stack == null || stack.isEmpty()) return false;
-        return stack.is(ItemTags.PICKAXES);
-    }
-
-    /**
-     * Puts the most-damaged non-silk-touch pickaxe into the main hand
-     * so Mending XP repairs it first.
-     */
-    private void ensureMostDamagedPickInMainHand() {
-        NonNullList<ItemStack> inv = ctx.player().getInventory().getNonEquipmentItems();
-
-        int saverThreshold = Baritone.settings().itemSaverThreshold.value;
-
-        // If we're already tracking a slot, stick with it until fully repaired
-        if (currentRepairSlot >= 0 && currentRepairSlot < inv.size()) {
-            ItemStack current = inv.get(currentRepairSlot);
-            if (isPickaxe(current) && !hasSilkTouch(current) && current.getDamageValue() > 0) {
-                // If remaining <= itemSaverThreshold: can't mine with it, put in offhand for Mending repair.
-                // (Silk touch is handled by manageSilkTouchPickaxe separately.)
-                int remaining = current.getMaxDamage() - current.getDamageValue();
-                if (remaining <= saverThreshold && !silkTouchMovedToOffhand) {
-                    int containerSlot = currentRepairSlot < 9
-                            ? currentRepairSlot + 36 : currentRepairSlot;
-                    ctx.playerController().windowClick(
-                            ctx.player().inventoryMenu.containerId,
-                            containerSlot, 40, ClickType.SWAP, ctx.player());
-                    silkTouchOriginalSlot = currentRepairSlot;
-                    silkTouchMovedToOffhand = true;
-                    logDirect("MindFix: pick durability at saver limit, moved to offhand for Mending");
-                } else if (remaining > saverThreshold) {
-                    putSlotInMainHand(currentRepairSlot);
-                }
-                return;
-            }
-            // Fully repaired or no longer a valid pick — find next
-            currentRepairSlot = -1;
-        }
-
-        // Find the most damaged non-silk-touch pick to repair next
-        int mostDamagedSlot = -1;
-        int highestDamage = 0;
-        for (int i = 0; i < inv.size(); i++) {
-            ItemStack s = inv.get(i);
-            if (!isPickaxe(s) || hasSilkTouch(s) || s.getDamageValue() == 0) continue;
-            if (s.getDamageValue() > highestDamage) {
-                highestDamage = s.getDamageValue();
-                mostDamagedSlot = i;
-            }
-        }
-        if (mostDamagedSlot == -1) return;
-        currentRepairSlot = mostDamagedSlot;
-        putSlotInMainHand(mostDamagedSlot);
+    /** Same as swapSlotWithOffhand — restores offhand item back to slot. */
+    private void swapOffhandWithSlot(int slot) {
+        swapSlotWithOffhand(slot);
     }
 
     private void putSlotInMainHand(int slot) {
@@ -414,75 +353,27 @@ public final class MindFixProcess extends BaritoneProcessHelper implements IMind
                     ctx.player().inventoryMenu.containerId,
                     slot, 0, ClickType.SWAP, ctx.player());
             ctx.player().getInventory().setSelectedSlot(0);
-            currentRepairSlot = 0; // slot 0 now has the pick
+            currentRepairSlot = 0;
         }
     }
 
-    /**
-     * Manages silk-touch pickaxe placement during REPAIRING state.
-     * Moves silk-touch pick to offhand so a non-silk-touch pick is used for mining.
-     */
-    private void manageSilkTouchPickaxe() {
-        if (silkTouchMovedToOffhand) return; // already in offhand, skip scan
-        NonNullList<ItemStack> items = ctx.player().getInventory().getNonEquipmentItems();
-
-        // Check if main hand item has silk touch
-        int selectedSlot = ctx.player().getInventory().getSelectedSlot();
-        ItemStack mainHandItem = items.get(selectedSlot);
-
-        if (isPickaxe(mainHandItem) && hasSilkTouch(mainHandItem)) {
-            // Need to move silk touch to offhand and find a non-silk-touch pickaxe for main hand
-            if (!silkTouchMovedToOffhand) {
-                // Move silk touch pickaxe to offhand
-                int containerSlot = slotToContainerSlot(selectedSlot);
-                ctx.playerController().windowClick(
-                        ctx.player().inventoryMenu.containerId,
-                        containerSlot, 40, ClickType.SWAP, ctx.player()
-                );
-                silkTouchOriginalSlot = selectedSlot;
-                silkTouchMovedToOffhand = true;
-                logDirect("MindFix: moved silk-touch pickaxe to offhand");
-            }
-
-            // Find a non-silk-touch pickaxe for main hand
-            for (int i = 0; i < 9; i++) {
-                ItemStack stack = items.get(i);
-                if (isPickaxe(stack) && !hasSilkTouch(stack)) {
-                    ctx.player().getInventory().setSelectedSlot(i);
-                    break;
-                }
-            }
-        }
+    private boolean isPickaxe(ItemStack stack) {
+        return stack != null && !stack.isEmpty() && stack.is(ItemTags.PICKAXES);
     }
 
-    /**
-     * Restores the silk-touch pickaxe from the offhand back to its original slot.
-     */
-    private void restoreSilkTouchFromOffhand() {
-        if (silkTouchOriginalSlot < 0) return;
-
-        // Button 40 with SWAP moves offhand to the targeted slot, and targeted to offhand
-        // To move offhand item back, we click on the original container slot with button=40
-        int containerSlot = slotToContainerSlot(silkTouchOriginalSlot);
-        ctx.playerController().windowClick(
-                ctx.player().inventoryMenu.containerId,
-                containerSlot, 40, ClickType.SWAP, ctx.player()
-        );
-        logDirect("MindFix: restored silk-touch pickaxe to slot " + silkTouchOriginalSlot);
+    private boolean hasSilkTouch(ItemStack stack) {
+        if (stack.isEmpty()) return false;
+        for (Holder<Enchantment> e : stack.getEnchantments().keySet()) {
+            if (e.is(Enchantments.SILK_TOUCH)) return true;
+        }
+        return false;
     }
 
-    /**
-     * Converts an inventory slot index (from getNonEquipmentItems()) to a container slot index.
-     * Hotbar slots 0-8 map to container slots 36-44.
-     * Main inventory slots 9-35 map to container slots 9-35.
-     */
-    private int slotToContainerSlot(int invSlot) {
-        if (invSlot < 9) {
-            // Hotbar
-            return invSlot + 36;
-        } else {
-            // Main inventory
-            return invSlot;
+    private boolean hasMending(ItemStack stack) {
+        if (stack.isEmpty()) return false;
+        for (Holder<Enchantment> e : stack.getEnchantments().keySet()) {
+            if (e.is(Enchantments.MENDING)) return true;
         }
+        return false;
     }
 }
