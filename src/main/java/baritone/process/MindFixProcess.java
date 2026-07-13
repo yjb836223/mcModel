@@ -25,6 +25,7 @@ import baritone.api.utils.BlockOptionalMetaLookup;
 import baritone.utils.BaritoneProcessHelper;
 import net.minecraft.core.Holder;
 import net.minecraft.core.NonNullList;
+import net.minecraft.tags.ItemTags;
 import net.minecraft.world.inventory.ClickType;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.enchantment.Enchantment;
@@ -65,6 +66,10 @@ public final class MindFixProcess extends BaritoneProcessHelper implements IMind
     private boolean savedAutoTool = true;
     private boolean autoToolOverridden = false;
 
+    // Saved itemSaver settings — overridden during repair, must be restored
+    private boolean savedItemSaver = false;
+    private int savedItemSaverThreshold = 10;
+
     public MindFixProcess(Baritone baritone) {
         super(baritone);
     }
@@ -98,15 +103,12 @@ public final class MindFixProcess extends BaritoneProcessHelper implements IMind
         }
 
         if (state == State.PREPARE) {
-            // Enable itemSaver if not already enabled
-            if (!Baritone.settings().itemSaver.value) {
-                Baritone.settings().itemSaver.value = true;
-                logDirect("MindFix: enabled itemSaver");
-            }
-            // Ensure threshold is at least 20
+            // Save and override itemSaver settings
+            savedItemSaver = Baritone.settings().itemSaver.value;
+            savedItemSaverThreshold = Baritone.settings().itemSaverThreshold.value;
+            Baritone.settings().itemSaver.value = true;
             if (Baritone.settings().itemSaverThreshold.value < 20) {
                 Baritone.settings().itemSaverThreshold.value = 20;
-                logDirect("MindFix: set itemSaverThreshold to 20");
             }
 
             // Save MineProcess filter and quantity
@@ -165,7 +167,9 @@ public final class MindFixProcess extends BaritoneProcessHelper implements IMind
                 silkTouchOriginalSlot = -1;
             }
 
-            // Restore mineScanDroppedItems and autoTool
+            // Restore all overridden settings
+            Baritone.settings().itemSaver.value = savedItemSaver;
+            Baritone.settings().itemSaverThreshold.value = savedItemSaverThreshold;
             if (mineScanOverridden) {
                 Baritone.settings().mineScanDroppedItems.value = savedMineScanDroppedItems;
                 mineScanOverridden = false;
@@ -206,6 +210,8 @@ public final class MindFixProcess extends BaritoneProcessHelper implements IMind
         savedFilter = null;
         savedDesiredQuantity = 0;
         currentRepairSlot = -1;
+        Baritone.settings().itemSaver.value = savedItemSaver;
+        Baritone.settings().itemSaverThreshold.value = savedItemSaverThreshold;
         if (mineScanOverridden) {
             Baritone.settings().mineScanDroppedItems.value = savedMineScanDroppedItems;
             mineScanOverridden = false;
@@ -290,13 +296,9 @@ public final class MindFixProcess extends BaritoneProcessHelper implements IMind
         return false;
     }
 
-    /**
-     * Returns true if the item stack is a pickaxe (has TOOL component and is a pickaxe type).
-     */
     private boolean isPickaxe(ItemStack stack) {
         if (stack == null || stack.isEmpty()) return false;
-        // Check by item tag or by name - use the item's registered name
-        return stack.getItem().getDescriptionId().contains("pickaxe");
+        return stack.is(ItemTags.PICKAXES);
     }
 
     /**
@@ -351,6 +353,7 @@ public final class MindFixProcess extends BaritoneProcessHelper implements IMind
      * Moves silk-touch pick to offhand so a non-silk-touch pick is used for mining.
      */
     private void manageSilkTouchPickaxe() {
+        if (silkTouchMovedToOffhand) return; // already in offhand, skip scan
         NonNullList<ItemStack> items = ctx.player().getInventory().getNonEquipmentItems();
 
         // Check if main hand item has silk touch

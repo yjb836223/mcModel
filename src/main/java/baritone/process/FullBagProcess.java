@@ -21,6 +21,7 @@ import baritone.Baritone;
 import baritone.api.process.IFullBagProcess;
 import baritone.api.process.PathingCommand;
 import baritone.api.process.PathingCommandType;
+import baritone.api.utils.BlockOptionalMetaLookup;
 import baritone.api.utils.Rotation;
 import baritone.api.utils.RotationUtils;
 import baritone.api.utils.input.Input;
@@ -162,7 +163,7 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
                         continue;
                     }
 
-                    long usedSlots = 0; for (ItemStack ignored : contents.nonEmptyItems()) usedSlots++;
+                    long usedSlots = com.google.common.collect.Iterables.size(contents.nonEmptyItems());
                     if (usedSlots < 27) {
                         // This shulker has space
                         foundSlot = i;
@@ -516,30 +517,16 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
 
     private boolean isInventoryFull() {
         NonNullList<ItemStack> items = ctx.player().getInventory().getNonEquipmentItems();
+        BlockOptionalMetaLookup mineFilter = ((MineProcess) baritone.getMineProcess()).getFilter();
 
-        // Step 1: empty slot = definitely not full
+        // Single pass: empty slot or a partial stack that can accept more mine drops → not full
         for (int i = 0; i < 36; i++) {
-            if (items.get(i).isEmpty()) return false;
-        }
-
-        // Step 2: no empty slots — check if any slot can still accept mine drops
-        // (e.g. 36 different items each at count 1: no empty slot, but NOT truly mining-full)
-        baritone.api.utils.BlockOptionalMetaLookup mineFilter = null;
-        try {
-            mineFilter = ((baritone.process.MineProcess) baritone.getMineProcess()).getFilter();
-        } catch (Exception ignored) {}
-
-        if (mineFilter != null) {
-            for (int i = 0; i < 36; i++) {
-                ItemStack slot = items.get(i);
-                // If this slot contains the mined item type and isn't full → not truly full
-                if (slot.getCount() < slot.getMaxStackSize() && mineFilter.has(slot)) {
-                    return false;
-                }
+            ItemStack slot = items.get(i);
+            if (slot.isEmpty()) return false;
+            if (mineFilter != null && slot.getCount() < slot.getMaxStackSize() && mineFilter.has(slot)) {
+                return false;
             }
         }
-
-        // No empty slots and mine drops can't fit in any existing stack → full
         return true;
     }
 
@@ -577,11 +564,7 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
      * Returns the position of the solid block (shulker will be placed on top).
      */
     private BlockPos findSolidSurface() {
-        BlockPos feet = new BlockPos(
-                (int) Math.floor(ctx.player().position().x),
-                (int) Math.floor(ctx.player().position().y),
-                (int) Math.floor(ctx.player().position().z)
-        );
+        BlockPos feet = ctx.playerFeet();
         // Check adjacent blocks to player feet and slightly around
         for (int dx = -2; dx <= 2; dx++) {
             for (int dz = -2; dz <= 2; dz++) {
@@ -609,11 +592,7 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
      * Finds a breakable non-air block near the player to create space for shulker placement.
      */
     private BlockPos findDiggableBlock() {
-        BlockPos feet = new BlockPos(
-                (int) Math.floor(ctx.player().position().x),
-                (int) Math.floor(ctx.player().position().y),
-                (int) Math.floor(ctx.player().position().z)
-        );
+        BlockPos feet = ctx.playerFeet();
         for (int dx = -1; dx <= 1; dx++) {
             for (int dz = -1; dz <= 1; dz++) {
                 if (dx == 0 && dz == 0) continue;

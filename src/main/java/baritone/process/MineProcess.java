@@ -164,7 +164,7 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
         if (!nearbyDrops.isEmpty()) {
             Goal dropGoal = new GoalComposite(
                     nearbyDrops.stream()
-                            .map(d -> (Goal) new GoalBlock(d))
+                            .map(d -> (Goal) new GoalNear(d, 2))
                             .toArray(Goal[]::new)
             );
             return new PathingCommand(dropGoal, PathingCommandType.REVALIDATE_GOAL_AND_PATH);
