@@ -208,8 +208,19 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
             }
 
             case PLACE_SHULKER: {
-                // Move shulker to hotbar and place it
+                // Move shulker to hotbar
                 moveShulkerToHotbar(activeShulkerSlot);
+
+                // Verify the held item is actually a shulker box before placing
+                int heldSlot = ctx.player().getInventory().getSelectedSlot();
+                ItemStack heldItem = ctx.player().getInventory().getNonEquipmentItems().get(heldSlot);
+                if (!isShulkerBox(heldItem)) {
+                    logDirect("FullBag: held item is not a shulker box, re-finding");
+                    checkedSlots.clear();
+                    needsPlaceCheck.clear();
+                    state = State.FINDING_SHULKER;
+                    return new PathingCommand(null, PathingCommandType.DEFER);
+                }
 
                 BlockPos surface = findSolidSurface();
                 if (surface == null) {
@@ -380,7 +391,22 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
                 }
 
                 BlockOptionalMetaLookup mineFilter = ((MineProcess) baritone.getMineProcess()).getFilter();
-
+                // Check if ANY non-protected item in inventory matches the filter
+                // If mineFilter is valid but nothing matches, it means the items in inventory
+                // don't match what we're mining (e.g. filter was redirected). Fall back to null-filter behavior.
+                if (mineFilter != null) {
+                    boolean anyMatch = false;
+                    for (int ci = 27; ci < ctx.player().containerMenu.slots.size(); ci++) {
+                        ItemStack cs = ctx.player().containerMenu.getSlot(ci).getItem();
+                        if (!cs.isEmpty() && !isProtected(cs) && mineFilter.has(cs)) { anyMatch = true; break; }
+                    }
+                    if (!anyMatch) {
+                        logDirect("FullBag: filter matched no inventory items, closing");
+                        ctx.minecraft().setScreen(null);
+                        state = State.BREAKING;
+                        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                    }
+                }
                 if (mineFilter == null) {
                     logDirect("FullBag: no mine filter active, closing shulker");
                     ctx.minecraft().setScreen(null);
@@ -657,15 +683,17 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
      */
     private void moveShulkerToHotbar(int slot) {
         if (slot >= 9) {
-            // Swap with hotbar slot 8 (container slot 44)
-            int containerSlot = slot; // slots 9-35 map directly to container slots 9-35
+            // Swap main-inventory slot with hotbar slot 8
             ctx.playerController().windowClick(
                     ctx.player().inventoryMenu.containerId,
-                    containerSlot, 8, ClickType.SWAP, ctx.player()
+                    slot, 8, ClickType.SWAP, ctx.player()
             );
+            activeShulkerSlot = 8; // update tracking: shulker is now at hotbar slot 8
+            ctx.player().getInventory().setSelectedSlot(8);
+        } else {
+            // Already in hotbar — select it directly
+            ctx.player().getInventory().setSelectedSlot(slot);
         }
-        // Select hotbar slot 8
-        ctx.player().getInventory().setSelectedSlot(8);
     }
 
     /**
