@@ -99,7 +99,12 @@ public final class MindFixProcess extends BaritoneProcessHelper implements IMind
                 logDirect("MindFix: all pickaxes low, starting XP repair mining");
                 state = State.PREPARE;
             } else {
-                // Only some picks are low — switch away from the low pick, keep mining
+                // Only some picks are low — disable autoTool so Baritone can't re-select the low pick
+                if (!autoToolOverridden) {
+                    savedAutoTool = Baritone.settings().autoTool.value;
+                    Baritone.settings().autoTool.value = false;
+                    autoToolOverridden = true;
+                }
                 switchAwayFromLowPick();
                 return new PathingCommand(null, PathingCommandType.DEFER);
             }
@@ -204,9 +209,10 @@ public final class MindFixProcess extends BaritoneProcessHelper implements IMind
             silkTouchOriginalSlot = -1;
         }
 
-        // Only restore MineProcess if we finished naturally (RESTORING state)
-        // If user did #stop, state won't be RESTORING, so we don't restart mining
-        if (savedFilter != null && state == State.RESTORING) {
+        // Always restore MineProcess if we redirected it — ensures FullBag and other
+        // higher-priority processes see the correct mine filter after taking control from us.
+        // (#stop will subsequently cancel MineProcess via its own onLostControl)
+        if (savedFilter != null) {
             MineProcess mineProcess = baritone.getMineProcess();
             mineProcess.mine(savedDesiredQuantity, savedFilter);
         }
