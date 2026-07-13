@@ -158,13 +158,14 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
         }
         BlockPos playerPos = ctx.playerFeet();
         List<BlockPos> nearbyDrops = cachedDrops.stream()
-                .filter(d -> d.distSqr(playerPos) <= 64) // 8 blocks = distSqr 64
+                .filter(d -> d.distSqr(playerPos) <= 16) // 4 blocks = distSqr 16
                 .sorted(java.util.Comparator.comparingDouble(d -> d.distSqr(playerPos)))
                 .collect(java.util.stream.Collectors.toList());
         if (!nearbyDrops.isEmpty()) {
+            // GoalBlock: navigate to exact block center (x.0000, z.0000) for reliable pickup
             Goal dropGoal = new GoalComposite(
                     nearbyDrops.stream()
-                            .map(d -> (Goal) new GoalNear(d, 2))
+                            .map(d -> (Goal) new GoalBlock(d))
                             .toArray(Goal[]::new)
             );
             return new PathingCommand(dropGoal, PathingCommandType.REVALIDATE_GOAL_AND_PATH);

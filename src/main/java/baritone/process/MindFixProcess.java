@@ -83,8 +83,8 @@ public final class MindFixProcess extends BaritoneProcessHelper implements IMind
         if (state == State.REPAIRING || state == State.RESTORING || state == State.PREPARE) {
             return true;
         }
-        // IDLE: only trigger when #mine is running AND FullBag is not active
-        return allPickaxesBelowThreshold()
+        // IDLE: active when ANY pick is low (for pick-switching) or ALL are low (for XP mining)
+        return anyPickaxeBelowThreshold()
                 && baritone.getMineProcess().isActive()
                 && !baritone.getFullBagProcess().isActive();
     }
@@ -95,9 +95,12 @@ public final class MindFixProcess extends BaritoneProcessHelper implements IMind
 
         if (state == State.IDLE) {
             if (allPickaxesBelowThreshold()) {
-                logDirect("MindFix: all pickaxes are low durability, starting repair");
+                // All picks are low — redirect to XP ore mining for full repair
+                logDirect("MindFix: all pickaxes low, starting XP repair mining");
                 state = State.PREPARE;
             } else {
+                // Only some picks are low — switch away from the low pick, keep mining
+                switchAwayFromLowPick();
                 return new PathingCommand(null, PathingCommandType.DEFER);
             }
         }
@@ -234,6 +237,52 @@ public final class MindFixProcess extends BaritoneProcessHelper implements IMind
         return "MindFix [" + state + "]";
     }
 
+    /** Returns true if ANY pickaxe has remaining durability <= (itemSaverThreshold + 30). */
+    private boolean anyPickaxeBelowThreshold() {
+        int threshold = Baritone.settings().itemSaverThreshold.value + 30;
+        NonNullList<ItemStack> items = ctx.player().getInventory().getNonEquipmentItems();
+        for (ItemStack stack : items) {
+            if (isPickaxe(stack) && (stack.getMaxDamage() - stack.getDamageValue()) <= threshold) return true;
+        }
+        ItemStack offhand = ctx.player().getOffhandItem();
+        return isPickaxe(offhand) && (offhand.getMaxDamage() - offhand.getDamageValue()) <= threshold;
+    }
+
+    /**
+     * While only SOME picks are low (not all), switch the active hotbar slot away from
+     * any pick that is at or below threshold+30, preferring a healthier pick.
+     */
+    private void switchAwayFromLowPick() {
+        int threshold = Baritone.settings().itemSaverThreshold.value + 30;
+        NonNullList<ItemStack> inv = ctx.player().getInventory().getNonEquipmentItems();
+        int selected = ctx.player().getInventory().getSelectedSlot();
+        ItemStack current = inv.get(selected);
+
+        // Only act if the currently held pick is below threshold
+        if (!isPickaxe(current) || (current.getMaxDamage() - current.getDamageValue()) > threshold) return;
+
+        // Find a healthier pick in hotbar first
+        for (int i = 0; i < 9; i++) {
+            if (i == selected) continue;
+            ItemStack s = inv.get(i);
+            if (isPickaxe(s) && (s.getMaxDamage() - s.getDamageValue()) > threshold) {
+                ctx.player().getInventory().setSelectedSlot(i);
+                return;
+            }
+        }
+        // Try main inventory — swap to hotbar slot 0
+        for (int i = 9; i < 36; i++) {
+            ItemStack s = inv.get(i);
+            if (isPickaxe(s) && (s.getMaxDamage() - s.getDamageValue()) > threshold) {
+                ctx.playerController().windowClick(
+                        ctx.player().inventoryMenu.containerId,
+                        i, 0, ClickType.SWAP, ctx.player());
+                ctx.player().getInventory().setSelectedSlot(0);
+                return;
+            }
+        }
+    }
+
     /**
      * Returns true if ALL pickaxes in inventory have remaining durability <= (itemSaverThreshold + 30).
      * Returns false if no pickaxes exist.
@@ -314,9 +363,8 @@ public final class MindFixProcess extends BaritoneProcessHelper implements IMind
         if (currentRepairSlot >= 0 && currentRepairSlot < inv.size()) {
             ItemStack current = inv.get(currentRepairSlot);
             if (isPickaxe(current) && !hasSilkTouch(current) && current.getDamageValue() > 0) {
-                // If this pick's remaining durability <= saverThreshold, itemSaver blocks it from mining.
-                // Treat it like a silk touch pick: put in offhand so Mending still repairs it,
-                // and let a higher-durability pick do the mining.
+                // If remaining <= itemSaverThreshold: can't mine with it, put in offhand for Mending repair.
+                // (Silk touch is handled by manageSilkTouchPickaxe separately.)
                 int remaining = current.getMaxDamage() - current.getDamageValue();
                 if (remaining <= saverThreshold && !silkTouchMovedToOffhand) {
                     int containerSlot = currentRepairSlot < 9

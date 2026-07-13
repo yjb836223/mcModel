@@ -263,6 +263,9 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
             }
 
             case OPENING_SHULKER: {
+                // Ensure left-click is not held (would break the shulker instead of opening it)
+                baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+
                 // GUI already opened — skip ahead
                 if (!(ctx.player().containerMenu instanceof InventoryMenu)) {
                     waitTicks = 0;
@@ -523,10 +526,10 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
                     return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
                 }
 
-                // Path toward the dropped shulker to pick it up
+                // Navigate to block center (GoalBlock = x.0000, z.0000) for reliable pickup
                 waitTicks = 0;
                 return new PathingCommand(
-                    new baritone.api.pathing.goals.GoalNear(dropPos, 2),
+                    new baritone.api.pathing.goals.GoalBlock(dropPos),
                     PathingCommandType.SET_GOAL_AND_PATH
                 );
             }
@@ -682,10 +685,12 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
 
                     if (bs.isFaceSturdy(ctx.world(), candidate, net.minecraft.core.Direction.UP)
                             && above.isAir() && above2.isAir()) {
-                        // Make sure this isn't where the player is standing (avoid blocking)
                         BlockPos abovePos = candidate.above();
                         if (!abovePos.equals(feet) && !abovePos.equals(feet.above())) {
-                            return candidate;
+                            // Only return if the player can actually reach this surface (not through walls)
+                            if (RotationUtils.reachable(ctx, candidate).isPresent()) {
+                                return candidate;
+                            }
                         }
                     }
                 }
