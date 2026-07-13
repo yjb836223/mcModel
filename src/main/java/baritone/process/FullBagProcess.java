@@ -137,12 +137,6 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
     public PathingCommand onTick(boolean calcFailed, boolean isSafeToCancel) {
         switch (state) {
             case IDLE: {
-                // Handle AFK_STOP → IDLE restart (side-effect-free isActive requires this here)
-                if (!isInventoryFull() || hasShulkerBoxes()) {
-                    checkedSlots.clear();
-                    needsPlaceCheck.clear();
-                    placeRetries = 0;
-                }
                 if (isInventoryFull() && baritone.getMineProcess().isActive()) {
                     logDirect("FullBag: inventory full, searching for shulker box with space");
                     checkedSlots.clear();
@@ -543,19 +537,19 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
             case WAITING_PICKUP: {
                 baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
 
-                // Find the dropped shulker box ItemEntity
+                // Find the NEAREST dropped shulker box ItemEntity within 8 blocks
                 BlockPos dropPos = null;
+                double nearestDist = Double.MAX_VALUE;
                 for (Entity entity : ((net.minecraft.client.multiplayer.ClientLevel) ctx.world()).entitiesForRendering()) {
                     if (entity instanceof ItemEntity ie && isShulkerBox(ie.getItem())) {
                         double dist = entity.distanceTo(ctx.player());
-                        if (dist <= 8.0) {
-                            // Use actual entity coords (not block position) to avoid being blocked by walls
+                        if (dist <= 8.0 && dist < nearestDist) {
+                            nearestDist = dist;
                             dropPos = new BlockPos(
                                 (int) Math.floor(ie.getX()),
                                 (int) Math.floor(ie.getY()),
                                 (int) Math.floor(ie.getZ())
                             );
-                            break;
                         }
                     }
                 }
@@ -624,8 +618,16 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
             }
 
             case AFK_STOP: {
+                // Check if conditions improved (user added shulkers or inventory freed up)
+                if (!isInventoryFull() || hasShulkerBoxes()) {
+                    logDirect("FullBag: conditions improved, restarting");
+                    checkedSlots.clear();
+                    needsPlaceCheck.clear();
+                    placeRetries = 0;
+                    state = State.IDLE;
+                    return new PathingCommand(null, PathingCommandType.DEFER);
+                }
                 baritone.getPathingBehavior().cancelEverything();
-                logDirect("FullBag: all shulkers full and no junk to drop. Stopping.");
                 return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
             }
 
