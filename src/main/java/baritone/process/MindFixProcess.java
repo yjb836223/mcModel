@@ -308,15 +308,31 @@ public final class MindFixProcess extends BaritoneProcessHelper implements IMind
     private void ensureMostDamagedPickInMainHand() {
         NonNullList<ItemStack> inv = ctx.player().getInventory().getNonEquipmentItems();
 
-        // If we're already tracking a slot, stick with it until it's fully repaired
+        int saverThreshold = Baritone.settings().itemSaverThreshold.value;
+
+        // If we're already tracking a slot, stick with it until fully repaired
         if (currentRepairSlot >= 0 && currentRepairSlot < inv.size()) {
             ItemStack current = inv.get(currentRepairSlot);
             if (isPickaxe(current) && !hasSilkTouch(current) && current.getDamageValue() > 0) {
-                // Still needs repair — keep it in main hand
-                putSlotInMainHand(currentRepairSlot);
+                // If this pick's remaining durability <= saverThreshold, itemSaver blocks it from mining.
+                // Treat it like a silk touch pick: put in offhand so Mending still repairs it,
+                // and let a higher-durability pick do the mining.
+                int remaining = current.getMaxDamage() - current.getDamageValue();
+                if (remaining <= saverThreshold && !silkTouchMovedToOffhand) {
+                    int containerSlot = currentRepairSlot < 9
+                            ? currentRepairSlot + 36 : currentRepairSlot;
+                    ctx.playerController().windowClick(
+                            ctx.player().inventoryMenu.containerId,
+                            containerSlot, 40, ClickType.SWAP, ctx.player());
+                    silkTouchOriginalSlot = currentRepairSlot;
+                    silkTouchMovedToOffhand = true;
+                    logDirect("MindFix: pick durability at saver limit, moved to offhand for Mending");
+                } else if (remaining > saverThreshold) {
+                    putSlotInMainHand(currentRepairSlot);
+                }
                 return;
             }
-            // Fully repaired or slot changed — pick a new one
+            // Fully repaired or no longer a valid pick — find next
             currentRepairSlot = -1;
         }
 

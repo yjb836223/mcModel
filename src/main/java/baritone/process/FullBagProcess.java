@@ -263,8 +263,14 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
             }
 
             case OPENING_SHULKER: {
-                // Wait for the shulker block to appear, then right-click it to open the GUI
+                // GUI already opened — skip ahead
+                if (!(ctx.player().containerMenu instanceof InventoryMenu)) {
+                    waitTicks = 0;
+                    state = State.WAITING_OPEN;
+                    return onTick(calcFailed, isSafeToCancel);
+                }
                 if (placedPos != null && ctx.world().getBlockState(placedPos).getBlock() instanceof ShulkerBoxBlock) {
+                    // Keep right-clicking the placed shulker every tick until GUI opens
                     net.minecraft.world.phys.BlockHitResult openHit =
                         new net.minecraft.world.phys.BlockHitResult(
                             net.minecraft.world.phys.Vec3.atCenterOf(placedPos),
@@ -274,9 +280,12 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
                         );
                     ctx.playerController().processRightClickBlock(
                         ctx.player(), ctx.world(), InteractionHand.MAIN_HAND, openHit);
-                    waitTicks = 0;
-                    state = State.WAITING_OPEN;
-                    logDirect("FullBag: opening shulker");
+                    waitTicks++;
+                    if (waitTicks > 40) {
+                        logDirect("FullBag: shulker not opening after 40 ticks, retrying placement");
+                        waitTicks = 0;
+                        state = State.PLACE_SHULKER;
+                    }
                 } else {
                     waitTicks++;
                     if (waitTicks > 20) {
@@ -320,7 +329,8 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
                             // Re-open for transferring — transition to PLACE_SHULKER to re-place the same slot
                             // Actually we need to re-open it; it's still at placedPos after we close
                             // Let's go back to PLACE_SHULKER to right-click it again
-                            state = State.PLACE_SHULKER;
+                            // Shulker still in world at placedPos — right-click again to open it
+                            state = State.OPENING_SHULKER;
                         } else {
                             logDirect("FullBag: shulker is full, breaking and continuing search");
                             state = State.BREAKING;
@@ -333,9 +343,9 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
 
                 waitTicks++;
                 if (waitTicks > 60) {
-                    logDirect("FullBag: timed out waiting for shulker to open, retrying placement");
+                    logDirect("FullBag: timed out waiting for shulker to open, retrying right-click");
                     waitTicks = 0;
-                    state = State.PLACE_SHULKER;
+                    state = State.OPENING_SHULKER; // retry open, not re-place
                 }
                 return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
             }
@@ -477,7 +487,12 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
                     if (entity instanceof ItemEntity ie && isShulkerBox(ie.getItem())) {
                         double dist = entity.distanceTo(ctx.player());
                         if (dist <= 8.0) {
-                            dropPos = entity.blockPosition();
+                            // Use actual entity coords (not block position) to avoid being blocked by walls
+                            dropPos = new BlockPos(
+                                (int) Math.floor(ie.getX()),
+                                (int) Math.floor(ie.getY()),
+                                (int) Math.floor(ie.getZ())
+                            );
                             break;
                         }
                     }
@@ -508,10 +523,10 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
                     return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
                 }
 
-                // Path toward the dropped shulker to pick it up (auto-pickup radius ~1.5 blocks)
+                // Path toward the dropped shulker to pick it up
                 waitTicks = 0;
                 return new PathingCommand(
-                    new baritone.api.pathing.goals.GoalNear(dropPos, 1),
+                    new baritone.api.pathing.goals.GoalNear(dropPos, 2),
                     PathingCommandType.SET_GOAL_AND_PATH
                 );
             }
