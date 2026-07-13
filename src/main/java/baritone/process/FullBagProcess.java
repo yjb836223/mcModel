@@ -547,9 +547,9 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
         if (stack == null || stack.isEmpty()) return false;
         var item = stack.getItem();
         if (stack.has(DataComponents.FOOD)) return true;
+        if (stack.has(DataComponents.TOOL)) return true;   // picks, shovels, hoes, axes (component-based, 1.21+)
         if (stack.is(ItemTags.SWORDS)) return true;
-        if (stack.is(ItemTags.AXES)) return true;
-        if (stack.has(DataComponents.EQUIPPABLE)) return true;
+        if (stack.has(DataComponents.EQUIPPABLE)) return true;  // armor
         if (item == Items.TOTEM_OF_UNDYING) return true;
         if (isShulkerBox(stack)) return true;
         return false;
