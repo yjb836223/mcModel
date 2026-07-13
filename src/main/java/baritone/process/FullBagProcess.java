@@ -92,9 +92,9 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
 
     // Multi-click transfer state: 0=pick up all, 1=put 1 back, 2=place rest in shulker
     private int transferPhase = 0;
-    private int transferSourceSlot = -1; // container slot currently being transferred
+    private int transferSourceSlot = -1;
 
-    // Ticks spent aiming at placement surface before clicking (gives rotation time to apply)
+    // Ticks spent aiming at placement surface before clicking
     private int aimTicks = 0;
     private static final int AIM_TICKS_REQUIRED = 3;
 
@@ -102,9 +102,17 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
     private boolean savedAllowPlace = true;
     private boolean allowPlaceOverridden = false;
 
-    // Ticks spent trying to find a surface to place shulker — triggers digging if too long
+    // Ticks spent trying to find a surface — triggers digging if too long
     private int noSurfaceTicks = 0;
     private static final int NO_SURFACE_DIG_THRESHOLD = 40;
+
+    // Total placement retries — prevents infinite OPENING_SHULKER ↔ PLACE_SHULKER loop
+    private int placeRetries = 0;
+    private static final int MAX_PLACE_RETRIES = 5;
+
+    // Tick counter for BREAKING timeout (prevent permanent stuck if shulker unreachable)
+    private int breakingTicks = 0;
+    private static final int BREAKING_TIMEOUT = 80;
 
     public FullBagProcess(Baritone baritone) {
         super(baritone);
@@ -113,19 +121,10 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
     @Override
     public boolean isActive() {
         if (ctx.player() == null) return false;
-        if (!Baritone.settings().fullbagEnabled.value) {
-            state = State.IDLE;
-            return false;
-        }
+        if (!Baritone.settings().fullbagEnabled.value) return false;
+        // AFK_STOP: check restart condition (no side effects — onTick handles state change)
         if (state == State.AFK_STOP) {
-            // Allow restart if inventory is no longer full or shulker boxes are now available
-            if (!isInventoryFull() || hasShulkerBoxes()) {
-                state = State.IDLE;
-                checkedSlots.clear();
-                needsPlaceCheck.clear();
-            } else {
-                return false;
-            }
+            return !isInventoryFull() || hasShulkerBoxes();
         }
         if (state != State.IDLE) {
             return true;
@@ -138,10 +137,17 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
     public PathingCommand onTick(boolean calcFailed, boolean isSafeToCancel) {
         switch (state) {
             case IDLE: {
+                // Handle AFK_STOP → IDLE restart (side-effect-free isActive requires this here)
+                if (!isInventoryFull() || hasShulkerBoxes()) {
+                    checkedSlots.clear();
+                    needsPlaceCheck.clear();
+                    placeRetries = 0;
+                }
                 if (isInventoryFull() && baritone.getMineProcess().isActive()) {
                     logDirect("FullBag: inventory full, searching for shulker box with space");
                     checkedSlots.clear();
                     needsPlaceCheck.clear();
+                    placeRetries = 0;
                     state = State.FINDING_SHULKER;
                     return onTick(calcFailed, isSafeToCancel);
                 }
@@ -296,16 +302,28 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
                         ctx.player(), ctx.world(), InteractionHand.MAIN_HAND, openHit);
                     waitTicks++;
                     if (waitTicks > 40) {
-                        logDirect("FullBag: shulker not opening after 40 ticks, retrying placement");
                         waitTicks = 0;
-                        state = State.PLACE_SHULKER;
+                        placeRetries++;
+                        if (placeRetries >= MAX_PLACE_RETRIES) {
+                            logDirect("FullBag: shulker won't open after " + MAX_PLACE_RETRIES + " retries, stopping");
+                            state = State.AFK_STOP;
+                        } else {
+                            logDirect("FullBag: shulker not opening, retry " + placeRetries + "/" + MAX_PLACE_RETRIES);
+                            state = State.PLACE_SHULKER;
+                        }
                     }
                 } else {
                     waitTicks++;
                     if (waitTicks > 20) {
-                        logDirect("FullBag: shulker block never appeared, retrying placement");
                         waitTicks = 0;
-                        state = State.PLACE_SHULKER;
+                        placeRetries++;
+                        if (placeRetries >= MAX_PLACE_RETRIES) {
+                            logDirect("FullBag: shulker block never appeared after " + MAX_PLACE_RETRIES + " retries, stopping");
+                            state = State.AFK_STOP;
+                        } else {
+                            logDirect("FullBag: shulker block not found, retry " + placeRetries + "/" + MAX_PLACE_RETRIES);
+                            state = State.PLACE_SHULKER;
+                        }
                     }
                 }
                 return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
@@ -453,17 +471,22 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
                     return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
                 }
 
-                // Phase 0: find next mine-target player slot to transfer (count > 1)
+                // Phase 0: find next mine-target player slot to transfer
                 for (int containerSlot = 27; containerSlot < ctx.player().containerMenu.slots.size(); containerSlot++) {
                     ItemStack stack = ctx.player().containerMenu.getSlot(containerSlot).getItem();
-                    if (stack.isEmpty() || stack.getCount() <= 1) continue;
+                    if (stack.isEmpty()) continue;
                     if (isProtected(stack)) continue;
                     if (!mineFilter.has(stack)) continue;
 
-                    // Left-click to pick up the full stack (cursor = all, player slot = empty)
-                    ctx.playerController().windowClick(containerId, containerSlot, 0, ClickType.PICKUP, ctx.player());
-                    transferSourceSlot = containerSlot;
-                    transferPhase = 1;
+                    if (stack.getCount() > 1) {
+                        // Multi-item stack: use 3-phase to keep 1 in player inventory
+                        ctx.playerController().windowClick(containerId, containerSlot, 0, ClickType.PICKUP, ctx.player());
+                        transferSourceSlot = containerSlot;
+                        transferPhase = 1;
+                    } else {
+                        // Single item: QUICK_MOVE directly (can't leave 1, just transfer all)
+                        ctx.playerController().windowClick(containerId, containerSlot, 0, ClickType.QUICK_MOVE, ctx.player());
+                    }
                     return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
                 }
 
@@ -501,8 +524,18 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
                 if (rot.isPresent()) {
                     baritone.getLookBehavior().updateTarget(rot.get(), true);
                     baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, true);
+                    breakingTicks = 0;
                 } else {
-                    logDirect("FullBag: placed shulker not reachable for breaking");
+                    breakingTicks++;
+                    if (breakingTicks >= BREAKING_TIMEOUT) {
+                        logDirect("FullBag: shulker unreachable for breaking (" + BREAKING_TIMEOUT + " ticks), giving up");
+                        baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+                        placedPos = null;
+                        breakingTicks = 0;
+                        state = State.IDLE;
+                        return new PathingCommand(null, PathingCommandType.DEFER);
+                    }
+                    logDirect("FullBag: placed shulker not reachable (" + breakingTicks + "/" + BREAKING_TIMEOUT + ")");
                 }
                 return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
             }
@@ -616,6 +649,8 @@ public final class FullBagProcess extends BaritoneProcessHelper implements IFull
         waitTicks = 0;
         aimTicks = 0;
         noSurfaceTicks = 0;
+        breakingTicks = 0;
+        placeRetries = 0;
         checkOnly = false;
         transferPhase = 0;
         transferSourceSlot = -1;

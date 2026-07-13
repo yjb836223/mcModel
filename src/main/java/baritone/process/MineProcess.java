@@ -149,7 +149,7 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
                 }
             }
         }
-        // Priority: pick up matching drops within 8 blocks — cached every 5 ticks for performance
+        // Priority: pick up matching drops within 4 blocks — cached every 5 ticks for performance
         if (dropScanCooldown <= 0) {
             cachedDrops = droppedItemsScan();
             dropScanCooldown = DROP_SCAN_INTERVAL;
@@ -162,13 +162,19 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
                 .sorted(java.util.Comparator.comparingDouble(d -> d.distSqr(playerPos)))
                 .collect(java.util.stream.Collectors.toList());
         if (!nearbyDrops.isEmpty()) {
-            // GoalBlock: navigate to exact block center (x.0000, z.0000) for reliable pickup
-            Goal dropGoal = new GoalComposite(
-                    nearbyDrops.stream()
-                            .map(d -> (Goal) new GoalBlock(d))
-                            .toArray(Goal[]::new)
-            );
-            return new PathingCommand(dropGoal, PathingCommandType.REVALIDATE_GOAL_AND_PATH);
+            if (calcFailed) {
+                // Path to drop failed — clear cache so we don't loop forever trying unreachable drops
+                cachedDrops = java.util.Collections.emptyList();
+                dropScanCooldown = DROP_SCAN_INTERVAL;
+            } else {
+                // GoalBlock: navigate to exact block center (x.0000, z.0000) for reliable pickup
+                Goal dropGoal = new GoalComposite(
+                        nearbyDrops.stream()
+                                .map(d -> (Goal) new GoalBlock(d))
+                                .toArray(Goal[]::new)
+                );
+                return new PathingCommand(dropGoal, PathingCommandType.REVALIDATE_GOAL_AND_PATH);
+            }
         }
 
         PathingCommand command = updateGoal();
